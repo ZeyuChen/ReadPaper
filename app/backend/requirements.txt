@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+arxiv-translator
+google-cloud-storage
+httpx
+pytest
