@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import SplitView from '@/components/SplitView';
-import { Search, Loader2 } from 'lucide-react';
+import { Search, Loader2, Trash2 } from 'lucide-react';
 
 export default function Home() {
   const [url, setUrl] = useState('');
@@ -12,7 +12,8 @@ export default function Home() {
   const [error, setError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [progress, setProgress] = useState(0);
-  const [library, setLibrary] = useState([]);
+  const [library, setLibrary] = useState<any[]>([]);
+  const [useDeepDive, setUseDeepDive] = useState(false);
 
   useEffect(() => {
     fetchLibrary();
@@ -60,7 +61,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ arxiv_url: url, model: 'flash' }),
+        body: JSON.stringify({ arxiv_url: url, model: 'flash', deepdive: useDeepDive }),
       });
 
       if (!response.ok) {
@@ -78,12 +79,12 @@ export default function Home() {
         try {
           const statusRes = await fetch(`http://localhost:8000/status/${extractedId}`);
           const statusData = await statusRes.json();
-          console.log("Status:", statusData.status);
+          // console.log("Status:", statusData.status, "Progress:", statusData.progress, "Message:", statusData.message);
 
           if (statusData.message) {
             setStatusMessage(statusData.message);
           }
-          if (statusData.progress) {
+          if (typeof statusData.progress === 'number') {
             setProgress(statusData.progress);
           }
 
@@ -109,6 +110,25 @@ export default function Home() {
       setError(err.message || 'An error occurred');
       setLoading(false);
       setStatusMessage('');
+    }
+  };
+
+  const deletePaper = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // Prevent card click
+    if (!confirm('Are you sure you want to delete this paper? This will remove all translated files.')) return;
+
+    try {
+      const res = await fetch(`http://localhost:8000/library/${id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setLibrary((prev: any[]) => prev.filter((p: any) => p.id !== id));
+      } else {
+        alert("Failed to delete paper");
+      }
+    } catch (e) {
+      console.error("Delete failed", e);
+      alert("Delete failed");
     }
   };
 
@@ -160,6 +180,13 @@ export default function Home() {
           </button>
         </form>
 
+        <div className="flex items-center justify-center gap-2 text-sm text-gray-600 cursor-pointer" onClick={() => setUseDeepDive(!useDeepDive)}>
+          <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${useDeepDive ? 'bg-blue-600 border-blue-600' : 'bg-white border-gray-300'}`}>
+            {useDeepDive && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>}
+          </div>
+          <span>Enable Deep Dive (Gemini 3.0 Pro)</span>
+        </div>
+
         {loading && (
           <div className="w-full max-w-md mx-auto space-y-2">
             <div className="flex justify-between text-xs text-blue-600 font-medium px-1">
@@ -197,7 +224,16 @@ export default function Home() {
             >
               <div className="flex justify-between items-start mb-2">
                 <span className="text-xs font-mono text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{paper.id}</span>
-                <span className="text-xs text-gray-400">{new Date(paper.added_at).toLocaleDateString()}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">{new Date(paper.added_at).toLocaleDateString()}</span>
+                  <button
+                    onClick={(e) => deletePaper(e, paper.id)}
+                    className="text-gray-400 hover:text-red-500 transition-colors p-1"
+                    title="Delete Paper"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
 
               <h3 className="text-lg font-semibold text-gray-900 group-hover:text-blue-700 transition line-clamp-2 mb-2">
@@ -232,36 +268,82 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left pt-8">
-        <FeatureCard
-          title="Gemini Translation"
-          desc="High-quality academic translation using the latest Gemini 3.0 Pro/Flash models."
-          delay="0"
-        />
-        <FeatureCard
-          title="Split View"
-          desc="Read original and translated text side-by-side for perfect context."
-          delay="100"
-        />
-        <FeatureCard
-          title="Cloud Sync"
-          desc="Your papers and comments synced across all your devices."
-          delay="200"
-        />
+      <div className="w-full max-w-4xl px-4 py-8">
+        <TaskMonitor />
       </div>
     </div>
-
   );
 }
 
-function FeatureCard({ title, desc, delay }: { title: string, desc: string, delay: string }) {
+function TaskMonitor() {
+  const [tasks, setTasks] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchTasks = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/tasks');
+        if (res.ok) {
+          const data = await res.json();
+          // Filter to show interesting tasks (processing, failed, or completed recently)
+          // For now show all
+          setTasks(data);
+        }
+      } catch (e) {
+        console.error("Failed to fetch tasks", e);
+      }
+    };
+
+    fetchTasks();
+    const interval = setInterval(fetchTasks, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (tasks.length === 0) return null;
+
   return (
-    <div
-      className="p-6 bg-white rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <h3 className="font-semibold text-gray-900 mb-2">{title}</h3>
-      <p className="text-sm text-gray-600 leading-relaxed">{desc}</p>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="bg-gray-50 px-4 py-3 border-b border-gray-100 flex justify-between items-center">
+        <h3 className="font-semibold text-gray-700 flex items-center gap-2">
+          <Loader2 size={16} className="animate-spin text-blue-500" />
+          Real-time System Status
+        </h3>
+        <span className="text-xs text-gray-500">Auto-refreshing</span>
+      </div>
+      <div className="divide-y divide-gray-50">
+        {tasks.map((task) => (
+          <div key={task.arxiv_id} className="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
+            <div className="flex-1 min-w-0 pr-4">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-mono text-xs font-medium text-gray-500 bg-gray-100 px-1.5 rounded">
+                  {task.arxiv_id}
+                </span>
+                <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${task.status === 'completed' ? 'bg-green-100 text-green-700' :
+                    task.status === 'failed' ? 'bg-red-100 text-red-700' :
+                      'bg-blue-100 text-blue-700'
+                  }`}>
+                  {task.status}
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 truncate">{task.message}</p>
+              {task.details && <p className="text-xs text-gray-400 mt-0.5">{task.details}</p>}
+            </div>
+
+            {task.status === 'processing' && (
+              <div className="flex items-center gap-3">
+                <div className="text-right">
+                  <span className="text-sm font-medium text-blue-600">{task.progress}%</span>
+                </div>
+                <div className="w-16 h-1.5 bg-blue-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-all duration-500"
+                    style={{ width: `${task.progress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
-  )
+  );
 }

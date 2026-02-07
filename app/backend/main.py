@@ -1,19 +1,18 @@
 import os
 import shutil
-import subprocess
 import asyncio
+import subprocess
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, TypedDict, Optional
 
-# Try to import GCS client
-try:
-    from google.cloud import storage
-    GCS_AVAILABLE = True
-except ImportError:
-    GCS_AVAILABLE = False
+from .services.storage import LocalStorageService, GCSStorageService
+from .services.library import LibraryManager
+from .logging_config import setup_logger
+
+logger = setup_logger("main_api")
 
 app = FastAPI()
 
@@ -36,95 +35,32 @@ TASK_STATUS: Dict[str, TaskStatus] = {}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(BASE_DIR)) # ReadPaper/
 PAPER_STORAGE = os.path.join(PROJECT_ROOT, "paper_storage")
-os.makedirs(PAPER_STORAGE, exist_ok=True)
 
-# GCS Config
+# Services Setup
+# 1. Storage
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-storage_client = None
-if GCS_AVAILABLE and GCS_BUCKET_NAME:
+storage_service = None
+local_storage = LocalStorageService(PAPER_STORAGE)
+
+if GCS_BUCKET_NAME:
     try:
-        storage_client = storage.Client() 
-        print(f"GCS Storage enabled. Bucket: {GCS_BUCKET_NAME}")
+        logger.info(f"GCS Storage enabled in env. Bucket: {GCS_BUCKET_NAME}")
+        storage_service = GCSStorageService(GCS_BUCKET_NAME)
+        logger.info("GCS Service initialized successfully.")
     except Exception as e:
-        print(f"Failed to initialize GCS client: {e}")
+        logger.warning(f"Failed to initialize GCS Storage (likely auth error): {e}")
+        logger.info("Falling back to Local Storage.")
+        storage_service = local_storage
+else:
+    logger.info("Using Local Storage only.")
+    storage_service = local_storage
 
-# Library Persistence
+# 2. Library
 LIBRARY_FILE = os.path.join(PROJECT_ROOT, "library.json")
-import json
-import feedparser
-import urllib.request
-from datetime import datetime
-
-class LibraryManager:
-    def __init__(self, filepath):
-        self.filepath = filepath
-        self._load()
-
-    def _load(self):
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r") as f:
-                    self.data = json.load(f)
-            except Exception:
-                self.data = {}
-        else:
-            self.data = {}
-
-    def _save(self):
-        with open(self.filepath, "w") as f:
-            json.dump(self.data, f, indent=2)
-
-    def add_paper(self, arxiv_id: str, model: str, title: str = "", abstract: str = "", authors: list = [], categories: list = []):
-        self._load() # Reload to get latest
-        if arxiv_id not in self.data:
-            self.data[arxiv_id] = {
-                "id": arxiv_id,
-                "added_at": datetime.now().isoformat(),
-                "versions": [],
-                "title": title,
-                "abstract": abstract,
-                "authors": authors,
-                "categories": categories
-            }
-        else:
-             # Update metadata if missing
-             if title and not self.data[arxiv_id].get("title"): self.data[arxiv_id]["title"] = title
-             if abstract and not self.data[arxiv_id].get("abstract"): self.data[arxiv_id]["abstract"] = abstract
-             if authors and not self.data[arxiv_id].get("authors"): self.data[arxiv_id]["authors"] = authors
-             if categories and not self.data[arxiv_id].get("categories"): self.data[arxiv_id]["categories"] = categories
-        
-        # Update version info
-        version_entry = {
-            "model": model,
-            "translated_at": datetime.now().isoformat(),
-            "status": "completed"
-        }
-        
-        # Check if version exists
-        exists = False
-        for v in self.data[arxiv_id]["versions"]:
-            if v["model"] == model:
-                v.update(version_entry)
-                exists = True
-                break
-        if not exists:
-            self.data[arxiv_id]["versions"].append(version_entry)
-            
-        self._save()
-
-    def get_paper(self, arxiv_id: str):
-        self._load()
-        return self.data.get(arxiv_id)
-
-    def list_papers(self):
-        self._load()
-        # Return list sorted by added_at desc
-        papers = list(self.data.values())
-        papers.sort(key=lambda x: x["added_at"], reverse=True)
-        return papers
-
 library_manager = LibraryManager(LIBRARY_FILE)
 
+# Helper: Fetch Metadata
+import feedparser
 def fetch_arxiv_metadata(arxiv_id: str):
     try:
         url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
@@ -139,15 +75,16 @@ def fetch_arxiv_metadata(arxiv_id: str):
             "categories": [tag.term for tag in entry.tags]
         }
     except Exception as e:
-        print(f"Error fetching metadata: {e}")
+        logger.error(f"Error fetching metadata: {e}")
         return {}
 
 class TranslationRequest(BaseModel):
     arxiv_url: str
     model: str = "flash"
+    deepdive: bool = False
 
 def update_status(arxiv_id: str, status: str, message: str = "", progress: int = 0, details: str = ""):
-    print(f"[{arxiv_id}] {status}: {message} ({progress}%)")
+    logger.info(f"[{arxiv_id}] {status}: {message} ({progress}%)")
     current = TASK_STATUS.get(arxiv_id, {})
     # Preserve progress if not provided and status is processing
     if progress == 0 and status == "processing" and "progress_percent" in current:
@@ -160,25 +97,21 @@ def update_status(arxiv_id: str, status: str, message: str = "", progress: int =
         "details": details
     }
 
-def upload_to_gcs(local_path: str, destination_blob_name: str):
-    """"Uploads a file to the bucket."""
-    if not storage_client or not GCS_BUCKET_NAME:
-        return
-    try:
-        bucket = storage_client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(destination_blob_name)
-        blob.upload_from_filename(local_path)
-        print(f"Uploaded {local_path} to gs://{GCS_BUCKET_NAME}/{destination_blob_name}")
-    except Exception as e:
-        print(f"Failed to upload to GCS: {e}")
+# Removed obsolete upload_to_gcs function. Using storage_service instead.
 
-async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
+async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool = False):
     """"
     Runs arxiv-translator and streams output to update status.
     """
     try:
+        # 1. Setup Storage
+        # Ensure paper folder exists (handled by storage service implicitly or explicitly)
+        # For local storage, we might need a path. For GCS, we just upload.
+        # But we need a local working directory for arxiv-translator to run in.
+        
+        # We ALWAYS need a local working dir for the subprocess
         working_dir = os.path.join(PAPER_STORAGE, arxiv_id)
-        os.makedirs(working_dir, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, working_dir, exist_ok=True)
         
         # 1. Download Original PDF
         update_status(arxiv_id, "processing", "Downloading original PDF...", 5)
@@ -189,18 +122,24 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
         # Just download locally for processing
         
         if not os.path.exists(original_pdf_path):
-            proc = subprocess.run(
-                ["curl", "-L", "-o", original_pdf_path, pdf_url], 
-                capture_output=True, 
-                text=True
-            )
-            if proc.returncode != 0:
-                print(f"Failed to download PDF: {proc.stderr}")
+             def download_pdf():
+                return subprocess.run(
+                    ["curl", "-L", "-o", original_pdf_path, pdf_url], 
+                    capture_output=True, 
+                    text=True
+                )
+             
+             proc = await asyncio.to_thread(download_pdf)
+             
+             if proc.returncode != 0:
+                logger.warning(f"Failed to download PDF: {proc.stderr}")
                 update_status(arxiv_id, "processing", "Failed to download original PDF (Non-fatal, continuing...)", 5)
         
-        # Upload original PDF to GCS
-        if os.path.exists(original_pdf_path):
-            upload_to_gcs(original_pdf_path, f"{arxiv_id}/{arxiv_id}.pdf")
+        # Upload original PDF to Storage (GCS or Local)
+        # local_storage always has it since we downloaded it there.
+        # If storage_service is GCS, we upload it.
+        if storage_service != local_storage and os.path.exists(original_pdf_path):
+             await storage_service.upload_file(original_pdf_path, f"{arxiv_id}/{arxiv_id}.pdf")
 
         # 2. Run arxiv-translator
         cmd = [
@@ -209,29 +148,37 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
             "--model", model
         ]
         
-        process = subprocess.Popen(
-            cmd,
+        if deepdive:
+            cmd.append("--deepdive")
+        
+        # Use asyncio.create_subprocess_exec to avoid blocking the event loop
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        # Pass Log Directory to subprocess
+        env["ARXIV_TRANSLATOR_LOG_DIR"] = os.path.abspath(os.path.join(BASE_DIR, "logs")) # app/backend/logs
+        
+        # print(f"DEBUG: Starting subprocess for {arxiv_id}")
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
             cwd=working_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
         )
+        # print(f"DEBUG: Subprocess started, pid={process.pid}")
         
         # Read stdout line by line
         while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
+            line_bytes = await process.stdout.readline()
+            if not line_bytes:
                 break
             
+            line = line_bytes.decode('utf-8').strip()
+            # print(f"DEBUG: Read line: {line[:50]}...") # Uncomment for verbose debug
             if line:
-                line = line.strip()
                 # Check for progress markers
                 if line.startswith("PROGRESS:"):
                     # Format: PROGRESS:CODE:P1:P2:MSG or PROGRESS:CODE:MSG
-                    # New: PROGRESS:TRANSLATING:<IDX>:<TOTAL>:<FILENAME>
-                    # Old: PROGRESS:DOWNLOADING:<MSG>
                     
                     parts = line.split(":", 2)
                     if len(parts) >= 3:
@@ -252,7 +199,7 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
                                     base_progress = 10
                                     if total > 0:
                                         p = int(base_progress + 80 * (idx / total))
-                                        print(f"DEBUG: Parsed progress {p}% for {fname}")
+                                        logger.debug(f"Parsed progress {p}% for {fname}")
                                         update_status(arxiv_id, "processing", f"Translating {fname}", p, f"File {idx}/{total}")
                                 except ValueError:
                                      # Fallback
@@ -275,24 +222,31 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
                         elif code == "EXTRACTING":
                             update_status(arxiv_id, "processing", rest, 8, "Extracting files...")
                             
+                        elif code == "ANALYZING":
+                            update_status(arxiv_id, "processing", rest, 85, "Analyzing technical content...")
+                            
                         else:
                             update_status(arxiv_id, "processing", rest)
                 else:
-                    # Log other output to console for debug
-                    # print(f"CLI: {line}")
+                    # Log other output to debug
+                    logger.debug(f"CLI: {line}")
                     pass
         
         # Check return code
-        if process.poll() != 0:
-            stderr_out = process.stderr.read()
-            print(f"Translation Error: {stderr_out}")
+        # Wait for process to finish
+        return_code = await process.wait()
+        
+        if return_code != 0:
+            stderr_out_bytes = await process.stderr.read()
+            stderr_out = stderr_out_bytes.decode('utf-8')
+            logger.error(f"Translation Error: {stderr_out}")
             task_s = TASK_STATUS.get(arxiv_id)
             if task_s and task_s["status"] != "failed":
                 update_status(arxiv_id, "failed", f"Process exited with error: {stderr_out[:100]}...", 0, "Process error")
 
         # Final check if we missed COMPLETED marker but process succeeded
         task_s = TASK_STATUS.get(arxiv_id)
-        if process.poll() == 0 and task_s and task_s["status"] != "completed" and task_s["status"] != "failed":
+        if return_code == 0 and task_s and task_s["status"] != "completed" and task_s["status"] != "failed":
              # Double check file existence
              expected_pdf = f"{arxiv_id}_zh_{model}.pdf"
              if model == "flash": expected_pdf = f"{arxiv_id}_zh_flash.pdf"
@@ -311,32 +265,100 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str):
              abstract = meta.get("abstract", "")
              authors = meta.get("authors", [])
              categories = meta.get("categories", [])
-             
-             library_manager.add_paper(arxiv_id, model, title=title, abstract=abstract, authors=authors, categories=categories)
+             await library_manager.add_paper(arxiv_id, model, title=title, abstract=abstract, authors=authors, categories=categories)
+
+        # 3. Upload LaTeX source to Storage (optional, in background)
+        # Only needed if storage_service is remote (GCS)
+        if storage_service != local_storage:
+            def upload_source_files():
+                 for root, dirs, files in os.walk(working_dir):
+                    for f in files:
+                        local_f = os.path.join(root, f)
+                        if local_f == original_pdf_path or local_f.endswith("_zh.pdf") or local_f.endswith("_zh_flash.pdf"):
+                            continue
+                        
+                        # Upload relative path
+                        rel_path = os.path.relpath(local_f, PAPER_STORAGE) # e.g. arxiv_id/main.tex
+                        # But wait, storage_service logic might expect something else.
+                        # GCSStorageService: upload_file(local, dest)
+                        # Dest should be arxiv_id/filename
+                        
+                        # Let's simplify and just upload flat structure or keep folder structure?
+                        # The walker goes into subdirs.
+                        rel_file = os.path.relpath(local_f, working_dir)
+                        dest_blob = f"{arxiv_id}/{rel_file}"
+                        
+                        # We need an async wrapper or call run_in_executor?
+                        # storage_service.upload_file does to_thread inside.
+                        # But we can't await inside this sync loop easily without standard loop.
+                        # Actually we can just collect list and await.
+                        pass # Refactor below
+            
+            # Async version
+            async def upload_sources_async():
+                tasks = []
+                for root, dirs, files in os.walk(working_dir):
+                    for f in files:
+                        local_f = os.path.join(root, f)
+                        # Skip large PDF results for source upload
+                        if local_f == original_pdf_path or local_f.endswith("_zh.pdf") or local_f.endswith("_zh_flash.pdf"):
+                            continue
+                            
+                        rel_file = os.path.relpath(local_f, working_dir)
+                        dest_blob = f"{arxiv_id}/{rel_file}"
+                        tasks.append(storage_service.upload_file(local_f, dest_blob))
+                if tasks:
+                    await asyncio.gather(*tasks)
+
+            await upload_sources_async()
 
         # Upload translated PDF to GCS
         # Find the translated file
-        candidates = [
-            f"{arxiv_id}_zh_flash.pdf",
-            f"{arxiv_id}_zh_pro.pdf",
-            f"{arxiv_id}_zh.pdf"
-        ]
-        for f in candidates:
-            local_f = os.path.join(working_dir, f)
-            if os.path.exists(local_f):
-                upload_to_gcs(local_f, f"{arxiv_id}/{f}")
-                break
+        # Upload translated PDF to Storage
+        if storage_service != local_storage:
+            async def upload_translated_pdf():
+                candidates = [
+                    f"{arxiv_id}_zh_flash.pdf",
+                    f"{arxiv_id}_zh_pro.pdf",
+                    f"{arxiv_id}_zh.pdf"
+                ]
+                for f in candidates:
+                    local_f = os.path.join(working_dir, f)
+                    if os.path.exists(local_f):
+                         await storage_service.upload_file(local_f, f"{arxiv_id}/{f}")
+                         break
+            
+            await upload_translated_pdf()
 
     except Exception as e:
-        print(f"Task Exception: {e}")
+        logger.error(f"Task Exception: {e}")
         update_status(arxiv_id, "failed", str(e))
 
-async def run_translation_wrapper(arxiv_url: str, model: str, arxiv_id: str):
-    await run_translation_stream(arxiv_url, model, arxiv_id)
+async def run_translation_wrapper(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool = False):
+    await run_translation_stream(arxiv_url, model, arxiv_id, deepdive)
 
 @app.get("/library")
 async def get_library():
-    return library_manager.list_papers()
+    # Use to_thread for library read
+    return await asyncio.to_thread(library_manager.list_papers)
+
+@app.delete("/library/{arxiv_id}")
+async def delete_paper(arxiv_id: str):
+    # 1. Remove from Library metadata
+    success = await library_manager.delete_paper(arxiv_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Paper not found in library")
+
+    # 2. Delete files from Storage (Local or GCS)
+    # We delete the folder {arxiv_id}
+    # For GCS, this deletes objects with prefix {arxiv_id}/
+    await storage_service.delete_folder(arxiv_id)
+    
+    # Also delete local cache if we are using GCS but have local files
+    if storage_service != local_storage:
+        await local_storage.delete_folder(arxiv_id)
+
+    return {"message": f"Paper {arxiv_id} deleted successfully", "arxiv_id": arxiv_id}
 
 @app.post("/translate")
 async def translate_paper(request: TranslationRequest, background_tasks: BackgroundTasks):
@@ -351,6 +373,10 @@ async def translate_paper(request: TranslationRequest, background_tasks: Backgro
         # Check if requested model version exists
         for v in paper.get("versions", []):
             if v["model"] == request.model and v["status"] == "completed":
+                 # Check if we want auxiliary but cached version was without? 
+                 # For simplicity, if cached, we return cached. 
+                 # User can delete and re-run if they want features.
+                 # Or we could just say "Already completed".
                  return {"message": "Already completed", "arxiv_id": arxiv_id, "status": "completed", "cached": True}
 
     current = TASK_STATUS.get(arxiv_id)
@@ -358,7 +384,7 @@ async def translate_paper(request: TranslationRequest, background_tasks: Backgro
         return {"message": "Already processing", "arxiv_id": arxiv_id, "status": current["status"]}
     
     update_status(arxiv_id, "queued", "Waiting in queue...")
-    background_tasks.add_task(run_translation_wrapper, request.arxiv_url, request.model, arxiv_id)
+    background_tasks.add_task(run_translation_wrapper, request.arxiv_url, request.model, arxiv_id, request.deepdive)
     
     return {"message": "Translation started", "arxiv_id": arxiv_id}
 
@@ -366,6 +392,13 @@ async def translate_paper(request: TranslationRequest, background_tasks: Backgro
 async def get_status(arxiv_id: str):
     status_info = TASK_STATUS.get(arxiv_id)
     if not status_info:
+        # Check library persistence for completion status (handle server restarts)
+        paper = library_manager.get_paper(arxiv_id)
+        if paper:
+             for v in paper.get("versions", []):
+                 if v["status"] == "completed":
+                      return {"arxiv_id": arxiv_id, "status": "completed", "message": "Translation finished successfully.", "progress": 100}
+
         return {"arxiv_id": arxiv_id, "status": "not_found", "message": "", "progress": 0}
     return {
         "arxiv_id": arxiv_id, 
@@ -374,6 +407,22 @@ async def get_status(arxiv_id: str):
         "progress": status_info.get("progress_percent", 0),
         "details": status_info.get("details", "")
     }
+
+@app.get("/tasks")
+async def get_tasks():
+    """Returns a list of all tracked tasks."""
+    # Convert dict to list and add ID
+    tasks = []
+    for aid, info in TASK_STATUS.items():
+        tasks.append({
+            "arxiv_id": aid,
+            "status": info["status"],
+            "message": info["message"],
+            "progress": info.get("progress_percent", 0),
+            "details": info.get("details", "")
+        })
+    # Sort by mostly active? or just return all
+    return tasks
 
 @app.get("/paper/{arxiv_id}/{file_type}")
 async def get_paper(arxiv_id: str, file_type: str):
@@ -427,6 +476,6 @@ async def get_paper(arxiv_id: str, file_type: str):
                  url = blob.generate_signed_url(version="v4", expiration=3600, method="GET")
                  return RedirectResponse(url)
         except Exception as e:
-            print(f"GCS Fetch Error: {e}")
+            logger.error(f"GCS Fetch Error: {e}")
 
     raise HTTPException(status_code=404, detail="File not found")
