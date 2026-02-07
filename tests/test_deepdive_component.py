@@ -1,6 +1,6 @@
 import os
 import pytest
-from arxiv_translator.deepdive import DeepDiveAnalyzer
+from app.backend.arxiv_translator.deepdive import DeepDiveAnalyzer
 
 # Mock API Key (we expect it to fail auth if we actually call, 
 # but we want to verify the class structure and maybe mock the call)

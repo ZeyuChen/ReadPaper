@@ -1,6 +1,6 @@
 
 import unittest
-from arxiv_translator.main import strip_latex_comments
+from app.backend.arxiv_translator.main import strip_latex_comments
 
 class TestLatexCleaning(unittest.TestCase):
     def test_strip_comments(self):

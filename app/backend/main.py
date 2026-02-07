@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import asyncio
 import subprocess
@@ -141,9 +142,9 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         if storage_service != local_storage and os.path.exists(original_pdf_path):
              await storage_service.upload_file(original_pdf_path, f"{arxiv_id}/{arxiv_id}.pdf")
 
-        # 2. Run arxiv-translator
+        # 2. Run arxiv-translator (Module call)
         cmd = [
-            "arxiv-translator",
+            sys.executable, "-m", "app.backend.arxiv_translator.main",
             arxiv_url,
             "--model", model
         ]
@@ -156,6 +157,10 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         env["PYTHONUNBUFFERED"] = "1"
         # Pass Log Directory to subprocess
         env["ARXIV_TRANSLATOR_LOG_DIR"] = os.path.abspath(os.path.join(BASE_DIR, "logs")) # app/backend/logs
+        # Explicitly set PYTHONPATH to project root to allow importing 'app' module
+        project_root = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+        env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+        print(f"DEBUG: PYTHONPATH={env['PYTHONPATH']}")
         
         # print(f"DEBUG: Starting subprocess for {arxiv_id}")
         process = await asyncio.create_subprocess_exec(

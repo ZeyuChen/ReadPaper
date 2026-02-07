@@ -1,7 +1,9 @@
 fastapi
 uvicorn
 pydantic
-arxiv-translator
+google-genai
 google-cloud-storage
+requests
+python-dotenv
 httpx
 pytest
