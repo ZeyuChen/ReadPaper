@@ -1,6 +1,6 @@
 
 import unittest
-from app.backend.arxiv_translator.main import strip_latex_comments
+from app.backend.arxiv_translator.latex_cleaner import clean_latex_content
 
 class TestLatexCleaning(unittest.TestCase):
     def test_strip_comments(self):
@@ -19,7 +19,7 @@ Hello World % Inline comment (should be kept based on current implementation, or
 Hello World % Inline comment (should be kept based on current implementation, or removed if logic is improved)
 \\end{document}
 """
-        cleaned = strip_latex_comments(latex_content)
+        cleaned = clean_latex_content(latex_content)
         # Normalize whitespace for comparison (simpler)
         self.assertEqual(cleaned.strip(), expected_content.strip())
         

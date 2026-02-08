@@ -1,4 +1,15 @@
 steps:
+  # 0. Run Tests
+  - name: 'python:3.11'
+    entrypoint: /bin/bash
+    args:
+      - '-c'
+      - |
+        pip install -r app/backend/requirements.txt
+        export PYTHONPATH=$PYTHONPATH:.
+        pytest tests/
+    id: 'Run Unit & E2E Tests'
+
   # 1. Build Backend Image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA', '-f', 'app/backend/Dockerfile', '.']

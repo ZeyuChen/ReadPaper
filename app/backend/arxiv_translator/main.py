@@ -102,9 +102,9 @@ def main():
         api_key = config_manager.get_api_key()
     
     if not api_key:
-        print("Error: Gemini API Key not found.")
-        print("Please set it via environment variable GEMINI_API_KEY")
-        print("OR run: arxiv-translator --set-key YOUR_API_KEY")
+        logger.error("Error: Gemini API Key not found.")
+        logger.error("Please set it via environment variable GEMINI_API_KEY")
+        logger.error("OR run: arxiv-translator --set-key YOUR_API_KEY")
         sys.exit(1)
 
     # Handle model aliases
@@ -326,7 +326,7 @@ def main():
             
     except Exception as e:
         logger.error(f"Translation FAILED: {e}", exc_info=True)
-        print(f"FAILED: {e}") # Print to stdout for CLI visibility if logger goes to stderr only
+        # print(f"FAILED: {e}") # Print to stdout for CLI visibility if logger goes to stderr only
         # traceback.print_exc() # Handled by exc_info=True in logger
     finally:
         if not args.keep:
