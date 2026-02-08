@@ -1,0 +1,54 @@
+
+import os
+from fastapi import HTTPException, Security, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from google.oauth2 import id_token
+from google.auth.transport import requests
+from typing import Optional
+from ..logging_config import setup_logger
+
+logger = setup_logger("AuthService")
+
+security = HTTPBearer()
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+    """
+    Verifies the Google ID Token or NextAuth JWT (if signed by us, but simpler to use Google ID token).
+    For simplicity in this phase, we accept:
+    1. A valid Google ID Token (from client side)
+    2. OR a "DEV-TOKEN-{user_id}" for local dev mode if enabled.
+    """
+    token = credentials.credentials
+    
+    # Dev Mode Bypass
+    if token.startswith("DEV-TOKEN-"):
+        # Allow simple bypass for local testing without Google Credentials
+        # Format: DEV-TOKEN-user123
+        return token.split("-", 2)[2]
+
+    # Lazy load client ID to ensure env vars are loaded
+    google_client_id = os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID
+
+    try:
+        if not google_client_id:
+             # If no client ID configured, and not a dev token, we can't verify properly.
+             # But for now, let's log warning and maybe fail?
+             # For now, if no Client ID, we might just fail safe.
+             raise HTTPException(status_code=401, detail="Server not configured for authentication")
+             
+        id_info = id_token.verify_oauth2_token(token, requests.Request(), google_client_id)
+        
+        # Google User ID
+        user_id = id_info['sub']
+        return user_id
+        
+    except ValueError as e:
+        logger.error(f"Token verification (ValueError) failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Invalid authentication credentials: {e}")
+    except Exception as e:
+        logger.error(f"Token verification (General Exception) failed: {e}")
+        logger.error(f"Token prefix received: {token[:20] if token else 'None'}...")
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+

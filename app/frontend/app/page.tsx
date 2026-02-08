@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
-import { Search, Loader2, Trash2 } from 'lucide-react';
+import { Search, Loader2, Trash2, LogOut, User } from 'lucide-react';
 
 export default function Home() {
   const [url, setUrl] = useState('');
@@ -35,14 +36,32 @@ export default function Home() {
     currentPage * ITEMS_PER_PAGE
   );
 
+  const { data: session } = useSession();
+
+  // Helper for Auth Headers
+  const getAuthHeaders = () => {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    // @ts-ignore
+    if (session?.idToken) {
+      // @ts-ignore
+      headers['Authorization'] = `Bearer ${session.idToken}`;
+    }
+    return headers;
+  };
+
   useEffect(() => {
-    fetchLibrary();
-  }, [arxivId]); // Reload when returning from split view
+    if (session) fetchLibrary();
+  }, [arxivId, session]); // Reload when returning from split view or session loads
 
   const fetchLibrary = async () => {
+    if (!session) return;
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiUrl}/library`);
+      const res = await fetch(`${apiUrl}/library`, {
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setLibrary(data);
@@ -56,6 +75,11 @@ export default function Home() {
     e.preventDefault();
     setError('');
     setStatusMessage('');
+
+    if (!session) {
+      setError("Please sign in to read papers.");
+      return;
+    }
 
     // Simple verification
     if (!url.includes('arxiv.org')) {
@@ -81,9 +105,7 @@ export default function Home() {
       // Call Backend
       const response = await fetch(`${apiUrl}/translate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ arxiv_url: url, model: 'flash', deepdive: useDeepDive }),
       });
 
@@ -100,15 +122,17 @@ export default function Home() {
       // Poll STATUS
       const pollInterval = setInterval(async () => {
         try {
-          const statusRes = await fetch(`${apiUrl}/status/${extractedId}`);
+          const statusRes = await fetch(`${apiUrl}/status/${extractedId}`, {
+            headers: getAuthHeaders()
+          });
           const statusData = await statusRes.json();
           // console.log("Status:", statusData.status, "Progress:", statusData.progress, "Message:", statusData.message);
 
           if (statusData.message) {
             setStatusMessage(statusData.message);
           }
-          if (typeof statusData.progress === 'number') {
-            setProgress(statusData.progress);
+          if (typeof statusData.progress_percent === 'number') {
+            setProgress(statusData.progress_percent);
           }
 
           if (statusData.status === 'completed') {
@@ -144,6 +168,7 @@ export default function Home() {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const res = await fetch(`${apiUrl}/library/${id}`, {
         method: 'DELETE',
+        headers: getAuthHeaders()
       });
       if (res.ok) {
         setLibrary((prev: any[]) => prev.filter((p: any) => p.id !== id));
@@ -167,7 +192,21 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-br from-gray-50 to-blue-50">
+    <div className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-br from-gray-50 to-blue-50 relative">
+      <div className="absolute top-4 right-4 flex items-center gap-4">
+        <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm text-sm text-gray-600">
+          <User size={16} />
+          <span className="max-w-[150px] truncate">{session?.user?.email || 'Guest'}</span>
+        </div>
+        <button
+          onClick={() => signOut()}
+          className="p-2 text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+          title="Sign Out"
+        >
+          <LogOut size={20} />
+        </button>
+      </div>
+
       <div className="w-full max-w-3xl space-y-8 text-center">
         <div className="space-y-2">
           <h1 className="text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">

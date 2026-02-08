@@ -9,19 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
     CLOUD_RUN_ENV=true
 
 # Install Python and pip
-# The base image is Debian-based
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# The base image is likely Alpine-based (common for texlive images)
+RUN apk add --no-cache \
     python3 \
-    python3-pip \
-    python3-venv \
+    py3-pip \
     curl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Create and set working directory
-WORKDIR /app
-
-# Create a virtual environment
-RUN python3 -m venv /opt/venv
+    && python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements file
@@ -39,7 +32,8 @@ COPY app/ /app/app/
 ENV PYTHONPATH=/app
 
 # Expose the port
-EXPOSE 8000
+# Expose the port (Cloud Run defaults to 8080)
+EXPOSE 8080
 
-# Run the application
-CMD ["uvicorn", "app.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application using the PORT environment variable
+CMD ["sh", "-c", "uvicorn app.backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

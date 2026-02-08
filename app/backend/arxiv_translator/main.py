@@ -188,7 +188,8 @@ def main():
         total_files = len(tex_files_to_translate)
         logger.info(f"Found {total_files} TeX files to translate.")
         
-        max_workers = 4 # Reduced from 12 for stability
+        max_workers = int(os.getenv("MAX_CONCURRENT_REQUESTS", 8))
+        logger.info(f"Using {max_workers} concurrent workers.")
         
         # 3. DeepDive Analysis (Now runs on English source BEFORE translation)
         from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -267,8 +268,39 @@ def main():
         log_ipc(f"PROGRESS:POST_PROCESSING:Applying robustness fixes...")
         apply_post_processing(source_zh_dir, main_tex)
         
-        log_ipc(f"PROGRESS:COMPILING:Compiling PDF with Tectonic...")
-        compile_pdf(source_zh_dir, main_tex)
+        log_ipc(f"PROGRESS:COMPILING:Compiling PDF with Latexmk...")
+        success, error_log = compile_pdf(source_zh_dir, main_tex)
+        
+        if not success:
+            logger.warning("Initial compilation failed. Attempting AI Recovery...")
+            log_ipc(f"PROGRESS:COMPILING:Initial compilation failed. Attempting AI Recovery...")
+            
+            # AI Recovery Logic
+            try:
+                from .latex_fixer import LatexFixer
+                fixer = LatexFixer(api_key, model_name="gemini-3-flash-preview")
+                
+                # Read broken content
+                with open(main_tex, 'r', encoding='utf-8') as f:
+                    broken_content = f.read()
+                    
+                # Fix
+                fixed_content = fixer.fix_latex(broken_content, error_log)
+                
+                if fixed_content != broken_content:
+                    # Overwrite
+                    with open(main_tex, 'w', encoding='utf-8') as f:
+                        f.write(fixed_content)
+                    
+                    logger.info("Applied AI fix to main.tex. Retrying compilation...")
+                    log_ipc(f"PROGRESS:COMPILING:Retrying compilation with AI fixes...")
+                    
+                    success, error_log = compile_pdf(source_zh_dir, main_tex)
+                else:
+                    logger.warning("AI Fixer returned code without changes. Skipping retry.")
+                    
+            except Exception as fix_e:
+                logger.error(f"AI Recovery failed: {fix_e}", exc_info=True)
         
         # Move PDF to root or custom output
         pdf_name = os.path.basename(main_tex).replace(".tex", ".pdf")
@@ -284,7 +316,7 @@ def main():
             
             final_pdf = f"{arxiv_id}{suffix}.pdf"
         
-        if os.path.exists(compiled_pdf):
+        if success and os.path.exists(compiled_pdf):
             shutil.copy(compiled_pdf, final_pdf)
             logger.info(f"SUCCESS: Generated {final_pdf}")
             log_ipc(f"PROGRESS:COMPLETED:Translation finished successfully.")

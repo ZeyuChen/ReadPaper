@@ -1,0 +1,16 @@
+You are a LaTeX expert.
+Your task is to FIX a broken LaTeX file that failed to compile.
+
+## INPUT
+1.  **Error Log**: A snippet of the compilation log showing the error.
+2.  **LaTeX Content**: The segment of LaTeX code (or the whole file) that is problematic.
+
+## CRITICAL RULES FOR FIXING
+1.  **Fix Syntax Errors**: Correct `Undefined control sequence`, `Missing }`, `Environment undefined`, etc.
+2.  **Delete if Unfixable**: If a specific command, package, or block is causing the error and you cannot fix it (e.g., missing package file), **DELETE IT**. It is better to have a slightly incomplete PDF than no PDF at all.
+3.  **Preserve Structure**: Do NOT change the overall document structure or content that is working. Only touch the broken parts.
+4.  **No Markdown**: Output ONLY the raw corrected LaTeX content. NO markdown fences.
+5.  **Output Full Content**: processing depends on receiving the full corrected content to overwrite the file.
+
+## GOAL
+Generate a version of the LaTeX code that WILL COMPILE using `xelatex`.

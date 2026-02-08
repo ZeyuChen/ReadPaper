@@ -15,7 +15,8 @@ The project is designed for cloud-native deployment on **Google Cloud Run**, uti
 ## 🚀 Key Features
 
 - **LaTeX-Native Translation**: Translates source code directly to preserve complex equations, tables, and citations.
-- **DeepDive Analysis**: Performs an initial AI pass to generate English-language insights, which are then translated and embedded into the final PDF.
+- **DeepDive Analysis (New)**: Performs an initial AI pass to generate English-language insights for complex technical concepts, which are then translated and embedded into the final PDF.
+- **AI-Powered Recovery (New)**: Automatically detects PDF compilation failures and uses Gemini 3.0 Flash to "fix" broken LaTeX code, ensuring a robust output even with malformed inputs.
 - **Split-View Interface**: Modern Next.js frontend for side-by-side reading of original and translated versions.
 - **Cloud Scale**: Built on Google Cloud Run for serverless scalability.
 - **Robust Compilation**: Dockerized TeX Live environment ensures consistent PDF generation.
@@ -37,7 +38,30 @@ graph TD
     GCS -->|Serve PDFs| FE
 ```
 
+
+## 🛠️ Usage
+
+### CLI Translation
+
+To translate a paper with DeepDive enabled:
+
+```bash
+# Basic Translation
+python -m app.backend.arxiv_translator.main https://arxiv.org/abs/2502.12345
+
+# With DeepDive (Technical Analysis)
+python -m app.backend.arxiv_translator.main https://arxiv.org/abs/2502.12345 --deepdive
+```
+
+### Web Interface
+
+1.  Navigate to the web UI.
+2.  Enter the arXiv URL or ID.
+3.  Toggle the **"Enable DeepDive Analysis"** switch.
+4.  Click **Translate**.
+
 ## 🛠️ Deployment
+
 
 This repository is configured for automated deployment via **Google Cloud Build**.
 

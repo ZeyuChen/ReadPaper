@@ -36,7 +36,7 @@ steps:
       - '--memory'
       - '4Gi'
       - '--set-env-vars'
-      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY}'
+      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs'
     id: 'Deploy Backend'
 
   # 6. Deploy Frontend to Cloud Run
@@ -59,7 +59,7 @@ steps:
 
 substitutions:
   _REGION: 'us-central1'
-  _BUCKET_NAME: 'readpaper-storage' 
+  _BUCKET_NAME: 'readpaper-storage-gen-lang-client-0098594892' 
   # _GEMINI_API_KEY should be set in the Trigger configuration secrets
 
 images:

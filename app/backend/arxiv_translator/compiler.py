@@ -1,10 +1,12 @@
 import subprocess
 import os
+import shutil
 from .logging_utils import logger
 
 def compile_pdf(source_dir: str, main_tex_file: str):
     """
     Compiles the LaTeX project to PDF using latexmk.
+    Supports both native execution (if latexmk is installed) and Docker fallback.
     
     Args:
         source_dir (str): The directory containing the source files.
@@ -17,34 +19,35 @@ def compile_pdf(source_dir: str, main_tex_file: str):
     # main_tex_file might be absolute, we need relative for latexmk usually
     rel_tex_file = os.path.basename(main_tex_file)
     
-    logger.info(f"Compiling {rel_tex_file} in {source_dir} using Dockerized TeX Live...")
+    logger.info(f"Compiling {rel_tex_file} in {source_dir}...")
     
     try:
-        # Docker command construction
-        # We mount the source_dir to /workdir in the container
-        # We use the current user ID to ensure generated files are owned by the host user
-        uid = os.getuid()
-        gid = os.getgid()
+        # Check if latexmk is installed natively
+        latexmk_path = shutil.which("latexmk")
         
-        docker_image = "texlive/texlive:latest"
+        if latexmk_path:
+            logger.info(f"Found native latexmk at {latexmk_path}. Using native compilation.")
+            # Native execution (Cloud Run or Local with TeX Live)
+            cmd = [
+                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-file-line-error", "-outdir=.", rel_tex_file
+            ]
+        else:
+            logger.info("Native latexmk not found. Falling back to Dockerized TeX Live.")
+            # Docker fallback (Local Dev without TeX Live)
+            uid = os.getuid()
+            gid = os.getgid()
+            docker_image = "ghcr.io/xu-cheng/texlive-full:latest" # Use specific image for consistency
+            
+            cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{os.path.abspath(source_dir)}:/workdir",
+                "-w", "/workdir",
+                "--user", f"{uid}:{gid}",
+                docker_image,
+                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-file-line-error", "-outdir=.", rel_tex_file
+            ]
         
-        # latexmk flags:
-        # -xelatex (or -xe): Use XeLaTeX for Chinese support
-        # -bibtex: Run BibTeX
-        # -interaction=nonstopmode: Don't halt on errors
-        # -file-line-error: distinct error messages
-        # -outdir=.: Output to current directory
-        
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{os.path.abspath(source_dir)}:/workdir",
-            "-w", "/workdir",
-            "--user", f"{uid}:{gid}",
-            docker_image,
-            "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-file-line-error", "-outdir=.", rel_tex_file
-        ]
-        
-        logger.debug(f"Running docker command: {' '.join(cmd)}")
+        logger.debug(f"Running command: {' '.join(cmd)}")
         
         result = subprocess.run(
             cmd,
@@ -62,12 +65,18 @@ def compile_pdf(source_dir: str, main_tex_file: str):
         else:
             logger.info("Compilation successful.")
             
-        return True
-    except FileNotFoundError:
-        logger.error("Docker command not found. Please ensure Docker is installed and in PATH.")
-        return False
+        # Verify PDF generation
+        pdf_name = rel_tex_file.replace(".tex", ".pdf")
+        if os.path.exists(pdf_name):
+            return True, ""
+        else:
+            logger.error("PDF was not generated despite return code.")
+            # Capture relevant error from log
+            combined_log = result.stdout + "\n" + result.stderr
+            return False, combined_log[-3000:] # Return last 3000 chars of log
+
     except Exception as e:
         logger.error(f"Compiler error: {e}")
-        return False
+        return False, str(e)
     finally:
         os.chdir(cwd)

@@ -1,96 +1,86 @@
-import os
+
 import json
-from datetime import datetime
-from typing import Dict, List, Optional
 import asyncio
+from typing import List, Dict, Optional
 from ..logging_config import setup_logger
 
-logger = setup_logger("library_manager")
+logger = setup_logger("LibraryManager")
+from .storage import StorageService
 
 class LibraryManager:
-    def __init__(self, filepath: str):
-        self.filepath = filepath
-        self.data = {}
-        self._load()
+    def __init__(self, storage: StorageService):
+        self.storage = storage
+        self.library_file = "library.json" # Relative to storage root
+        self._cache: Dict[str, dict] = {} # In-memory cache
+        self._loaded = False
 
-    def _load(self):
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r") as f:
-                    self.data = json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load library data: {e}")
-                self.data = {}
-        else:
-            self.data = {}
+    async def _load_library(self):
+        """Loads library from storage if not already loaded."""
+        if self._loaded:
+            return
 
-    def _save(self):
         try:
-            with open(self.filepath, "w") as f:
-                json.dump(self.data, f, indent=2)
-            logger.debug(f"Library saved to {self.filepath}")
+            if await self.storage.exists(self.library_file):
+                content = await self.storage.read_file(self.library_file)
+                self._cache = json.loads(content)
+            else:
+                self._cache = {}
+            self._loaded = True
         except Exception as e:
-            logger.error(f"Failed to save library data: {e}")
+            logger.error(f"Failed to load library: {e}")
+            self._cache = {}
 
-    async def add_paper(self, arxiv_id: str, model: str, title: str = "", abstract: str = "", authors: list = [], categories: list = []):
-        # Reload to ensure consistency with disk
-        await asyncio.to_thread(self._load)
+    async def _save_library(self):
+        """Saves current cache to storage."""
+        try:
+            content = json.dumps(self._cache, indent=2, ensure_ascii=False)
+            await self.storage.write_file(self.library_file, content)
+        except Exception as e:
+            logger.error(f"Failed to save library: {e}")
+
+    async def add_paper(self, arxiv_id: str, model: str, title: str, abstract: str, authors: List[str], categories: List[str]):
+        await self._load_library()
         
-        if arxiv_id not in self.data:
-            self.data[arxiv_id] = {
+        if arxiv_id not in self._cache:
+            self._cache[arxiv_id] = {
                 "id": arxiv_id,
-                "added_at": datetime.now().isoformat(),
-                "versions": [],
                 "title": title,
                 "abstract": abstract,
                 "authors": authors,
-                "categories": categories
+                "categories": categories,
+                "versions": []
             }
-        else:
-             # Update metadata if missing or new
-             if title: self.data[arxiv_id]["title"] = title
-             if abstract: self.data[arxiv_id]["abstract"] = abstract
-             if authors: self.data[arxiv_id]["authors"] = authors
-             if categories: self.data[arxiv_id]["categories"] = categories
-        
-        # Update version info
-        version_entry = {
-            "model": model,
-            "translated_at": datetime.now().isoformat(),
-            "status": "completed"
-        }
         
         # Check if version exists
-        exists = False
-        for v in self.data[arxiv_id]["versions"]:
-            if v["model"] == model:
-                v.update(version_entry)
-                exists = True
-                break
-        if not exists:
-            self.data[arxiv_id]["versions"].append(version_entry)
+        versions = self._cache[arxiv_id]["versions"]
+        existing = next((v for v in versions if v["model"] == model), None)
+        
+        if existing:
+            existing["status"] = "completed"
+            existing["timestamp"] = "now" # TODO: Real timestamp
+        else:
+            versions.append({
+                "model": model,
+                "status": "completed",
+                "timestamp": "now"
+            })
             
-        await asyncio.to_thread(self._save)
+        await self._save_library()
 
-    def get_paper(self, arxiv_id: str):
-        self._load()
-        return self.data.get(arxiv_id)
-
-    def list_papers(self):
-        self._load()
-        # Return list sorted by added_at desc
-        papers = list(self.data.values())
-        papers.sort(key=lambda x: x["added_at"], reverse=True)
+    async def list_papers(self) -> List[dict]:
+        await self._load_library()
+        # Convert dict to list
+        papers = list(self._cache.values())
         return papers
 
-    async def delete_paper(self, arxiv_id: str):
-        """
-        Removes paper from library.json.
-        Returns True if removed, False if not found.
-        """
-        await asyncio.to_thread(self._load)
-        if arxiv_id in self.data:
-            del self.data[arxiv_id]
-            await asyncio.to_thread(self._save)
+    async def get_paper(self, arxiv_id: str) -> Optional[dict]:
+        await self._load_library()
+        return self._cache.get(arxiv_id)
+
+    async def delete_paper(self, arxiv_id: str) -> bool:
+        await self._load_library()
+        if arxiv_id in self._cache:
+            del self._cache[arxiv_id]
+            await self._save_library()
             return True
         return False

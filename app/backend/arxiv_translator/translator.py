@@ -12,23 +12,19 @@ class GeminiTranslator:
         self.model_name = model_name
         self.client = genai.Client(api_key=self.api_key, http_options={'api_version': 'v1beta', 'timeout': 600000})
 
+        # Load Prompt
+        prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "translation_prompt.txt")
+        if os.path.exists(prompt_path):
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                self.system_prompt = f.read()
+        else:
+            # Fallback (should not happen if file exists)
+            logger.warning(f"Translation prompt not found at {prompt_path}, using fallback.")
+            self.system_prompt = "You are a professional academic translator. Translate LaTeX from English to Chinese, preserving all commands."
+
     @property
     def _system_prompt(self) -> str:
-        return """You are a professional academic translator specializing in computer science and mathematics. 
-Your task is to translate the following LaTeX source code from English to Chinese.
-
-CRITICAL RULES:
-1. STRICTLY PRESERVE all LaTeX commands, environments, macros, citations, references, and mathematical formulas. 
-   - Do NOT translate content inside `\\cite{...}`, `\\ref{...}`, `\\label{...}`, `\\usepackage{...}`, `\\documentclass{...}`.
-   - Do NOT translate equation environments like `\\begin{equation} ... \\end{equation}`, `$$ ... $$`, `$ ... $`.
-   - Do NOT translate code blocks or verbatim environments.
-2. Only translate the human-readable text content (paragraphs, section titles, captions).
-3. Ensure the translation is professional, academic, and flows naturally in Chinese. 
-   - Use precise and standard AI/ML terminology (e.g., "Transformer", "Zero-shot", "End-to-end", "Ablation study").
-   - Maintain a formal academic tone suitable for top-tier conference papers.
-4. Do NOT output markdown code fences (like ```latex ... ```). Output ONLY the raw translated LaTeX content.
-5. If the input is too long, the system might have split it. Translate exactly what is given.
-"""
+        return self.system_prompt
 
     def translate_latex(self, latex_content: str) -> str:
         """

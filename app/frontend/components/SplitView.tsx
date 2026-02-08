@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, RefreshCw, Download, Book, Plus, Menu, X, ArrowLeft, Loader2 } from 'lucide-react';
+import { useSession } from 'next-auth/react';
 
 interface Paper {
     id: string;
@@ -94,7 +95,7 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
                     const sData = await sRes.json();
 
                     if (sData.message) setStatusMsg(sData.message);
-                    if (typeof sData.progress === 'number') setProgress(sData.progress);
+                    if (typeof sData.progress_percent === 'number') setProgress(sData.progress_percent);
 
                     if (sData.status === 'completed') {
                         clearInterval(poll);
@@ -192,14 +193,14 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
                         <div className="absolute top-2 left-2 z-10 bg-black/60 text-white px-2 py-1 rounded text-xs backdrop-blur-sm shadow-sm pointer-events-none">
                             Original Source
                         </div>
-                        <iframe src={originalUrl} className="w-full h-full border-none" title="Original" />
+                        <AuthenticatedPdfViewer url={originalUrl} title="Original" />
                     </div>
                     {/* Right: Translated */}
                     <div className="flex-1 bg-white relative group">
                         <div className="absolute top-2 left-2 z-10 bg-blue-600/90 text-white px-2 py-1 rounded text-xs backdrop-blur-sm shadow-sm pointer-events-none">
                             Gemini Translated
                         </div>
-                        <iframe src={translatedUrl} className="w-full h-full border-none" title="Translated" />
+                        <AuthenticatedPdfViewer url={translatedUrl} title="Translated" />
                     </div>
                 </div>
             </div>
@@ -236,7 +237,6 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
                                         <div className="flex justify-between text-xs text-gray-500 font-medium">
                                             <span>{statusMsg || 'Processing...'}</span>
                                             {/* We need state for progress, let's assume we add it */}
-                                            {/* For now, just show message, update state next tool call */}
                                         </div>
                                         <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
                                             <div
@@ -261,4 +261,51 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
             )}
         </div>
     );
+}
+
+function AuthenticatedPdfViewer({ url, title }: { url: string, title: string }) {
+    const { data: session } = useSession();
+    const [blobUrl, setBlobUrl] = useState<string | null>(null);
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchPdf = async () => {
+            if (!session?.idToken) return;
+            try {
+                setLoading(true);
+                setError('');
+                const res = await fetch(url, {
+                    headers: {
+                        // @ts-ignore
+                        'Authorization': `Bearer ${session.idToken}`
+                    }
+                });
+                if (!res.ok) {
+                    if (res.status === 404) throw new Error("PDF not found yet");
+                    throw new Error(`Failed to load PDF: ${res.statusText}`);
+                }
+                const blob = await res.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                setBlobUrl(objectUrl);
+            } catch (e: any) {
+                console.error(`PDF Load Error (${title}):`, e);
+                setError(e.message);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchPdf();
+
+        return () => {
+            if (blobUrl) URL.revokeObjectURL(blobUrl);
+        };
+    }, [url, session]);
+
+    if (loading) return <div className="w-full h-full flex items-center justify-center text-gray-500"><Loader2 className="animate-spin mr-2" /> Loading PDF...</div>;
+    if (error) return <div className="w-full h-full flex items-center justify-center text-red-500 bg-gray-50 flex-col gap-2"><p>Unable to load PDF</p><p className="text-xs text-gray-400">{error}</p></div>;
+    if (!blobUrl) return <div className="w-full h-full flex items-center justify-center text-gray-400">Waiting for content...</div>;
+
+    return <iframe src={blobUrl} className="w-full h-full border-none" title={title} />;
 }
