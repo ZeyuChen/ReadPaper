@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+
 import { useState, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
@@ -209,67 +211,78 @@ export default function Home() {
 
       <div className="w-full max-w-3xl space-y-8 text-center">
         <div className="space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-            ReadPaper
-          </h1>
-          <p className="text-lg text-gray-600">
-            Bilingual arXiv reading experience powered by Gemini 3.0
-          </p>
-        </div>
-
-        <form onSubmit={handleTranslate} className="relative group flex gap-2">
-          <div className="relative flex-1">
-            <div className="absolute inset-y-0 left-0 flex items-center pl-4 pointer-events-none text-gray-400">
-              <Search size={20} />
-            </div>
-            <input
-              type="text"
-              placeholder="Paste arXiv URL (e.g., https://arxiv.org/abs/2602.04705)"
-              className="w-full py-4 pl-12 pr-4 text-gray-900 bg-white border border-gray-200 rounded-xl shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-lg"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-
-          {/* Model selection removed as per requirement: default to Flash */}
-
-          <button
-            type="submit"
-            disabled={loading || !url}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-8 py-4 rounded-xl transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed shadow-sm min-w-[120px]"
-          >
-            {loading ? <Loader2 className="animate-spin" /> : 'Read'}
-          </button>
-        </form>
-
-        <div className="flex items-center justify-center gap-2 text-sm text-gray-600 cursor-pointer" onClick={() => setUseDeepDive(!useDeepDive)}>
-          <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${useDeepDive ? 'bg-blue-600 border-blue-600' : 'bg-white border-gray-300'}`}>
-            {useDeepDive && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>}
-          </div>
-          <span>Enable Deep Dive (AI Analysis)</span>
-        </div>
-
-        {loading && (
-          <div className="w-full max-w-md mx-auto space-y-2">
-            <div className="flex justify-between text-xs text-blue-600 font-medium px-1">
-              <span>{statusMessage || 'Initializing...'}</span>
-              <span>{progress}%</span>
-            </div>
-            <div className="h-2 w-full bg-blue-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-blue-600 transition-all duration-500 ease-out rounded-full"
-                style={{ width: `${progress}%` }}
+          <div className="flex flex-col items-center justify-center mb-6">
+            <div className="relative w-24 h-24 mb-4">
+              <Image
+                src="/logo.png"
+                alt="ReadPaper Logo"
+                fill
+                className="object-contain drop-shadow-lg"
+                priority
               />
             </div>
+            <h1 className="text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
+              ReadPaper
+            </h1>
+            <p className="text-lg text-gray-600">
+              Bilingual arXiv reading experience powered by Gemini 3.0
+            </p>
           </div>
-        )}
 
-        {error && (
-          <div className="p-4 mb-4 text-red-700 bg-red-100 rounded-lg border border-red-200">
-            {error}
+          <form onSubmit={handleTranslate} className="relative group flex gap-2">
+            <div className="relative flex-1">
+              <div className="absolute inset-y-0 left-0 flex items-center pl-4 pointer-events-none text-gray-400">
+                <Search size={20} />
+              </div>
+              <input
+                type="text"
+                placeholder="Paste arXiv URL (e.g., https://arxiv.org/abs/2602.04705)"
+                className="w-full py-4 pl-12 pr-4 text-gray-900 bg-white border border-gray-200 rounded-xl shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-lg"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                disabled={loading}
+              />
+            </div>
+
+            {/* Model selection removed as per requirement: default to Flash */}
+
+            <button
+              type="submit"
+              disabled={loading || !url}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-8 py-4 rounded-xl transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed shadow-sm min-w-[120px]"
+            >
+              {loading ? <Loader2 className="animate-spin" /> : 'Read'}
+            </button>
+          </form>
+
+          <div className="flex items-center justify-center gap-2 text-sm text-gray-600 cursor-pointer" onClick={() => setUseDeepDive(!useDeepDive)}>
+            <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${useDeepDive ? 'bg-blue-600 border-blue-600' : 'bg-white border-gray-300'}`}>
+              {useDeepDive && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>}
+            </div>
+            <span>Enable Deep Dive (AI Analysis)</span>
           </div>
-        )}
+
+          {loading && (
+            <div className="w-full max-w-md mx-auto space-y-2">
+              <div className="flex justify-between text-xs text-blue-600 font-medium px-1">
+                <span>{statusMessage || 'Initializing...'}</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="h-2 w-full bg-blue-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 transition-all duration-500 ease-out rounded-full"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="p-4 mb-4 text-red-700 bg-red-100 rounded-lg border border-red-200">
+              {error}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Library Section */}

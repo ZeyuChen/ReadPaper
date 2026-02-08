@@ -26,16 +26,46 @@ Hello World
     
     return str(tmp_path)
 
+class SynchronousExecutor:
+    """
+    Dummy executor that runs tasks synchronously in the main thread/process.
+    This allows mocks to record calls correctly.
+    """
+    def __init__(self, max_workers=None):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+    def submit(self, fn, *args, **kwargs):
+        return SynchronousFuture(fn(*args, **kwargs))
+
+class SynchronousFuture:
+    def __init__(self, result):
+        self._result = result
+    def result(self):
+        return self._result
+
 @patch("app.backend.arxiv_translator.main.download_source")
 @patch("app.backend.arxiv_translator.main.extract_source")
 @patch("app.backend.arxiv_translator.main.GeminiTranslator")
 @patch("app.backend.arxiv_translator.main.DeepDiveAnalyzer")
 @patch("app.backend.arxiv_translator.main.compile_pdf")
 @patch("app.backend.arxiv_translator.main.clean_latex_directory")
-def test_e2e_pipeline_mocked(mock_clean, mock_compile, mock_deepdive, mock_translator, mock_extract, mock_download, mock_workspace):
+@patch("concurrent.futures.ProcessPoolExecutor") 
+@patch("concurrent.futures.as_completed")
+def test_e2e_pipeline_mocked(mock_as_completed, mock_executor, mock_clean, mock_compile, mock_deepdive, mock_translator, mock_extract, mock_download, mock_workspace):
     """
     Verifies the main entry point logic without external calls.
     """
+    # Setup Executor Mock to use our SynchronousExecutor
+    mock_executor.side_effect = SynchronousExecutor
+    
+    # Setup as_completed to just return the futures as keys of the dict passed or just the list
+    def side_effect_as_completed(fs):
+        return list(fs)
+    mock_as_completed.side_effect = side_effect_as_completed
+
     # Setup Mocks
     mock_download.return_value = os.path.join(mock_workspace, "workspace_2401.00000", "2401.00000.tar.gz")
     mock_clean.return_value = 1

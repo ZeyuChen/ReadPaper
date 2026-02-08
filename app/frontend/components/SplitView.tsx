@@ -271,6 +271,7 @@ function AuthenticatedPdfViewer({ url, title }: { url: string, title: string }) 
 
     useEffect(() => {
         const fetchPdf = async () => {
+            // @ts-ignore
             if (!session?.idToken) return;
             try {
                 setLoading(true);

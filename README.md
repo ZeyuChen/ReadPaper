@@ -1,5 +1,9 @@
 
-# ReadPaper v0.1: Bilingual AI ArXiv Reader
+
+<div align="center">
+  <img src="logo.png" width="120" alt="ReadPaper Logo" />
+  <h1>ReadPaper: Bilingual AI ArXiv Reader</h1>
+</div>
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)

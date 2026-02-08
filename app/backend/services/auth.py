@@ -9,17 +9,21 @@ from ..logging_config import setup_logger
 
 logger = setup_logger("AuthService")
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> str:
     """
-    Verifies the Google ID Token or NextAuth JWT (if signed by us, but simpler to use Google ID token).
-    For simplicity in this phase, we accept:
-    1. A valid Google ID Token (from client side)
-    2. OR a "DEV-TOKEN-{user_id}" for local dev mode if enabled.
+    Verifies the Google ID Token or NextAuth JWT.
     """
+    # Allow total bypass if configured (for local dev without dev tokens)
+    if os.getenv("DISABLE_AUTH") == "true":
+        return "local-dev-user"
+
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     token = credentials.credentials
     
     # Dev Mode Bypass
@@ -27,6 +31,10 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Security(securi
         # Allow simple bypass for local testing without Google Credentials
         # Format: DEV-TOKEN-user123
         return token.split("-", 2)[2]
+        
+    # Allow total bypass if configured (for local dev without dev tokens)
+    if os.getenv("DISABLE_AUTH") == "true":
+        return "local-dev-user"
 
     # Lazy load client ID to ensure env vars are loaded
     google_client_id = os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID

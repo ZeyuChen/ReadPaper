@@ -6,28 +6,32 @@ steps:
       - '-c'
       - |
         pip install -r app/backend/requirements.txt
-        export PYTHONPATH=$PYTHONPATH:.
+        export PYTHONPATH=$$PYTHONPATH:.
         pytest tests/
+    env:
+      - 'GEMINI_API_KEY=${_GEMINI_API_KEY}'
+      - 'GCS_BUCKET_NAME=${_BUCKET_NAME}'
+      - 'STORAGE_TYPE=gcs'
     id: 'Run Unit & E2E Tests'
 
   # 1. Build Backend Image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA', '-f', 'app/backend/Dockerfile', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID', '-f', 'app/backend/Dockerfile', '.']
     id: 'Build Backend'
 
   # 2. Build Frontend Image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA', '-f', 'app/frontend/Dockerfile', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID', '-f', 'app/frontend/Dockerfile', '.']
     id: 'Build Frontend'
 
   # 3. Push Backend Image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID']
     id: 'Push Backend'
 
   # 4. Push Frontend Image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID']
     id: 'Push Frontend'
 
   # 5. Deploy Backend to Cloud Run
@@ -38,7 +42,7 @@ steps:
       - 'deploy'
       - 'readpaper-backend'
       - '--image'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -61,7 +65,7 @@ steps:
         BACKEND_URL=$(gcloud run services describe readpaper-backend --platform managed --region ${_REGION} --format 'value(status.url)')
         echo "Backend URL: $$BACKEND_URL"
         gcloud run deploy readpaper-frontend \
-          --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA \
+          --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID \
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
@@ -74,8 +78,8 @@ substitutions:
   # _GEMINI_API_KEY should be set in the Trigger configuration secrets
 
 images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA'
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID'
 
 options:
   logging: CLOUD_LOGGING_ONLY

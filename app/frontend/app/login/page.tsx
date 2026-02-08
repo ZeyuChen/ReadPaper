@@ -1,7 +1,7 @@
 
 import { signIn } from "@/auth"
+import Image from "next/image"
 import { FcGoogle } from "react-icons/fc"
-import { FaBookOpen } from "react-icons/fa"
 
 export default function LoginPage() {
     return (
@@ -11,8 +11,14 @@ export default function LoginPage() {
 
             <div className="w-full max-w-md space-y-8 bg-white/80 dark:bg-black/50 backdrop-blur-xl p-8 rounded-2xl shadow-2xl border border-gray-200/50 dark:border-white/10">
                 <div className="flex flex-col items-center text-center">
-                    <div className="h-12 w-12 bg-blue-600 rounded-xl flex items-center justify-center mb-6 shadow-lg shadow-blue-600/20">
-                        <FaBookOpen className="text-white text-2xl" />
+                    <div className="relative h-20 w-20 mb-6 transition-transform hover:scale-105 duration-300">
+                        <Image
+                            src="/logo.png"
+                            alt="ReadPaper Logo"
+                            fill
+                            className="object-contain drop-shadow-2xl"
+                            priority
+                        />
                     </div>
                     <h2 className="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 via-blue-800 to-gray-900 dark:from-white dark:via-blue-200 dark:to-white">
                         Welcome back

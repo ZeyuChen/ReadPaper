@@ -197,7 +197,7 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             env=env
         )
         
-        # Stream logs
+                # Stream logs
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
@@ -217,31 +217,63 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                         "ANALYZING": (10, "Analyzing DeepDive...")
                     }
                     
+                    # Fetch current progress to ensure monotonicity
+                    current_status = TASK_STATUS.get(task_key, {})
+                    current_pct = current_status.get("progress_percent", 0)
+
                     # Handle advanced TRANSLATING:X:Y:File
                     if code == "TRANSLATING" and ":" in rest:
                          try:
                              # Format: count:total:filename
-                             c_part, t_part, msg = rest.split(":", 2)
-                             count = int(c_part)
-                             total = int(t_part)
-                             # Map 10% -> 90%
-                             pct = 10 + int((count / total) * 80)
-                             update_status(task_key, "processing", f"Translating: {msg}", pct)
-                         except:
-                             update_status(task_key, "processing", f"Translating: {rest.split(':')[-1]}", 40)
+                             # Use robust splitting
+                             p_parts = rest.split(":", 2)
+                             if len(p_parts) >= 3:
+                                 c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
+                                 count = int(c_part)
+                                 total = int(t_part)
+                                 
+                                 pct = current_pct
+                                 if total > 0:
+                                     # Map 10% -> 90%
+                                     # Formula: 10 + (count / total) * 80
+                                     # When count=0, pct=10.
+                                     pct = 10 + int((count / total) * 80)
+                                 
+                                 # Ensure monotonicity
+                                 if pct < current_pct:
+                                     pct = current_pct
+                                     
+                                 update_status(task_key, "processing", f"Translating: {msg}", pct)
+                             else:
+                                 update_status(task_key, "processing", f"Translating: {rest}")
+                         except Exception as e:
+                             # Fallback don't reset progress
+                             update_status(task_key, "processing", f"Translating: {rest.split(':')[-1]}")
 
                     # Handle advanced ANALYZING:X:Y:File
                     elif code == "ANALYZING" and ":" in rest:
                          try:
                              # Format: count:total:filename
-                             c_part, t_part, msg = rest.split(":", 2)
-                             count = int(c_part)
-                             total = int(t_part)
-                             # Map 10% -> 40% (DeepDive phase)
-                             pct = 10 + int((count / total) * 30)
-                             update_status(task_key, "processing", f"DeepDive Analyzing: {msg}", pct)
+                             p_parts = rest.split(":", 2)
+                             if len(p_parts) >= 3:
+                                 c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
+                                 count = int(c_part)
+                                 total = int(t_part)
+                                 
+                                 pct = current_pct
+                                 if total > 0:
+                                     # Map 10% -> 40% (DeepDive phase)
+                                     pct = 10 + int((count / total) * 30)
+                                 
+                                 # Ensure monotonicity
+                                 if pct < current_pct:
+                                     pct = current_pct
+
+                                 update_status(task_key, "processing", f"DeepDive Analyzing: {msg}", pct)
+                             else:
+                                 update_status(task_key, "processing", f"DeepDive Analyzing: {rest}")
                          except:
-                             update_status(task_key, "processing", f"DeepDive Analyzing: {rest.split(':')[-1]}", 20)
+                             update_status(task_key, "processing", f"DeepDive Analyzing: {rest.split(':')[-1]}")
 
                     elif code in status_map:
                          prog, msg = status_map[code]
@@ -250,6 +282,9 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                          elif code == "FAILED":
                              update_status(task_key, "failed", rest, 0)
                          else:
+                             # Generic status update (don't regress progress usually, unless starting phase)
+                             if prog < current_pct and prog > 0:
+                                 prog = current_pct
                              update_status(task_key, "processing", rest, prog, msg)
                     else:
                          update_status(task_key, "processing", rest)
@@ -413,3 +448,23 @@ async def get_paper(
             return RedirectResponse(url)
             
     raise HTTPException(status_code=404, detail="File could not be served")
+
+@app.get("/tasks")
+async def get_tasks(user_id: str = Depends(get_current_user)):
+    """
+    Returns the status of current background tasks for the user.
+    """
+    # Filter tasks by user_id prefix in key "user_id:arxiv_id"
+    user_tasks = []
+    prefix = f"{user_id}:"
+    
+    for key, status in TASK_STATUS.items():
+        if key.startswith(prefix):
+            arxiv_id = key.split(":", 1)[1]
+            task_data = status.copy()
+            task_data["arxiv_id"] = arxiv_id
+            # Map "progress_percent" to "progress" for frontend compatibility
+            task_data["progress"] = task_data.get("progress_percent", 0)
+            user_tasks.append(task_data)
+            
+    return user_tasks
