@@ -1,63 +1,83 @@
-# ReadPaper: AI-Powered arXiv Paper Translator
 
-**ReadPaper** is a cloud-native application that translates arXiv papers from English to Chinese (and other languages via Gemini) while preserving the original LaTeX layout. It features a modern split-view interface for reading the original and translated versions side-by-side.
+# ReadPaper: Bilingual AI ArXiv Reader
 
-## Features
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Next.js](https://img.shields.io/badge/next.js-14+-black.svg)
+![GCP](https://img.shields.io/badge/Google_Cloud-Ready-4285F4.svg)
 
-- **High-Fidelity Translation**: Uses Google's **Gemini 1.5 Flash/Pro** models to translate LaTeX source code directly.
-- **Split View Reading**: Compare original and translated PDFs instantly.
-- **Concurrent Processing**: Multi-process translation for fast turnaround (8x speedup).
-- **Cloud Ready**: Designed for Google Cloud Run with Firestore caching and GCS storage.
-- **Robust Compilation**: automatic fixes for `minted` packages and duplicate labels.
+**ReadPaper** automates the translation of technical arXiv papers from English to Chinese (and other languages) while preserving the original LaTeX layout and formatting. It leverages **Gemini 3.0 Flash/Pro** for high-fidelity translation and **DeepDive** AI analysis to inject expert insights directly into the document.
 
-## Project Structure
+The project is designed for cloud-native deployment on **Google Cloud Run**, utilizing **Cloud Storage (GCS)** for artifact management.
 
-- `app/backend`: Python FastAPI service handling translation requests and arXiv interaction.
-- `app/frontend`: Next.js application providing the user interface.
-- `arxiv-translator`: Core library for downloading, translating, and recompiling arXiv papers.
+## 🚀 Features
 
-## Getting Started
+- **LaTeX-Native Translation**: Translates source code directly to preserve complex equations, tables, and citations.
+- **DeepDive Analysis (New)**: Performs an initial AI pass to generate English-language insights, which are then translated and embedded into the final PDF.
+- **Split-View Interface**: Modern Next.js frontend for side-by-side reading of original and translated versions.
+- **Cloud Scale**: Built on Google Cloud Run for serverless scalability.
+- **Robust Compilation**: Dockerized TeX Live environment ensures consistent PDF generation.
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    User[User] -->|Upload/Url| FE[Frontend (Next.js)]
+    FE -->|API Request| BE[Backend (FastAPI)]
+    
+    subgraph Google Cloud Platform
+        BE -->|Download Src| ArXiv[arXiv.org]
+        BE -->|Analysis & Translation| Gemini[Gemini 1.5/3.0 API]
+        BE -->|Store Artifacts| GCS[Google Cloud Storage]
+        BE -->|Compile PDF| Tex[TeX Live Engine]
+    end
+    
+    GCS -->|Serve PDFs| FE
+```
+
+## 🛠️ Deployment on Google Cloud
+
+This repository is configured for automated deployment via **Google Cloud Build**.
 
 ### Prerequisites
 
-- Python 3.11+
-- Node.js 18+
-- [Tectonic](https://tectonic-typesetting.github.io/) (LaTeX compiler) installed globally.
-- Google Cloud Project with Gemini API enabled.
+1.  **Google Cloud Project** with billing enabled.
+2.  **APIs Enabled**: Cloud Run, Cloud Build, Artifact Registry, Cloud Storage.
+3.  **Encrypted Secrets**: Store your `GEMINI_API_KEY` in Google Secret Manager.
 
-### Backend Setup
+### One-Click Deploy (Manual)
 
-```bash
-cd app/backend
-pip install -r requirements.txt
-# Set your Gemini API Key
-export GEMINI_API_KEY="your_api_key_here"
-# Run Server
-python -m uvicorn main:app --reload
+Refer to [deployment.md](./deployment.md) for a step-by-step guide on deploying from your local machine using the `gcloud` CLI.
+
+### CI/CD with Cloud Build
+
+The included `cloudbuild.yaml` automated the build and deploy process on every push to the `main` branch.
+
+1.  Connect your GitHub repository to Cloud Build.
+2.  Set the following Substitution Variables in Cloud Build trigger:
+    -   `_REGION`: Your preferred region (e.g., `us-central1`).
+    -   `_BUCKET_NAME`: Your GCS bucket name.
+    -   `_GEMINI_API_KEY`: (Or mount from Secret Manager).
+
+## 📦 Project Structure
+
+```
+├── app/
+│   ├── backend/          # FastAPI Service (Python 3.11)
+│   │   ├── Dockerfile    # Full TeX Live environment
+│   │   └── ...
+│   ├── frontend/         # Next.js Application
+│   │   ├── Dockerfile    # Standalone output build
+│   │   └── ...
+├── arxiv-translator/     # Core Translation Logic
+├── cloudbuild.yaml       # CI/CD Configuration
+└── deployment.md         # Manual Deployment Guide
 ```
 
-### Frontend Setup
+## 🤝 Contributing
 
-```bash
-cd app/frontend
-npm install
-npm run dev
-```
+Contributions are welcome! Please submit a Pull Request.
 
-Visit `http://localhost:3000` to start translating papers.
-
-## Testing
-
-Run the full test suite from the project root:
-
-```bash
-# Backend Tests
-python -m pytest app/backend/tests
-
-# E2E Tests
-python tests/test_e2e_2510_26692.py
-```
-
-## License
+## 📄 License
 
 Apache-2.0

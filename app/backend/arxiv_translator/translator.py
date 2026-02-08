@@ -35,42 +35,12 @@ CRITICAL RULES:
         Translates LaTeX content from English to Chinese using Gemini.
         Preserves LaTeX structure.
         """
-        # Gemini Flash has 1M context, so we can probably send the whole file or large chunks.
-        # But for valid JSON/Request limits, maybe chunking is safer? 
-        # 1M context is huge. We can sending whole files usually.
-        
-        try:
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.models.generate_content(
-                        model=self.model_name,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self._system_prompt,
-                            temperature=0.1, 
-                        ),
-                        contents=[latex_content]
-                    )
-                    
-                    if response.text:
-                        cleaned = self._clean_output(response.text)
-                        return cleaned
-                except Exception as e:
-                    logger.warning(f"Translation attempt {attempt+1} failed: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 * (attempt + 1))
-                    else:
-                        logger.warning("Max retries reached. Attempting to chunk...")
-                        return self._translate_large_latex(latex_content)
-            
-            return latex_content
-            
-        except Exception as e:
-            logger.error(f"Translation error after retries: {e}")
-            return latex_content
+        # Always use chunking to ensure stability and partial progress
+        # This handles both small and large files uniformly using the robust streaming approach
+        return self._translate_chunked(latex_content)
 
-    def _translate_large_latex(self, content: str, chunk_size=150) -> str:
-        """Splits content into chunks of ~chunk_size lines and translates them."""
+    def _translate_chunked(self, content: str, chunk_size=150) -> str:
+        """Splits content into chunks of ~chunk_size lines and translates them using streaming."""
         lines = content.split('\n')
         chunks = []
         current_chunk = []
@@ -87,9 +57,10 @@ CRITICAL RULES:
         logger.info(f"Split content into {len(chunks)} chunks for translation.")
         
         for i, chunk in enumerate(chunks):
-            logger.debug(f"Translating chunk {i+1}/{len(chunks)}...")
+            logger.info(f"Translating chunk {i+1}/{len(chunks)}...")
             try:
-                response = self.client.models.generate_content(
+                # Use streaming to keep connection alive and reduce timeouts
+                response_stream = self.client.models.generate_content_stream(
                     model=self.model_name,
                     config=types.GenerateContentConfig(
                         system_instruction=self._system_prompt,
@@ -97,13 +68,21 @@ CRITICAL RULES:
                     ),
                     contents=[chunk]
                 )
-                if response.text:
-                    cleaned = self._clean_output(response.text)
+                
+                full_text = ""
+                for chunk_resp in response_stream:
+                    if chunk_resp.text:
+                        full_text += chunk_resp.text
+                
+                if full_text:
+                    cleaned = self._clean_output(full_text)
                     translated_chunks.append(cleaned)
                 else:
                     # Fallback: Use original chunk but still clean comments
+                    logger.warning(f"Chunk {i+1} returned empty response. Using fallback.")
                     cleaned_fallback = self._clean_output(chunk)
                     translated_chunks.append(cleaned_fallback)
+                    
             except Exception as e:
                 logger.error(f"Chunk {i+1} failed: {e}")
                 # Fallback: Use original chunk but still clean comments

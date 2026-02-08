@@ -16,14 +16,14 @@ Your goal is to identify **highly technical, complex, or dense paragraphs** in t
     -   When you find a paragraph worth explaining, insert your explanation **immediately after it** using the following LaTeX format:
     
     ```latex
-    \\begin{tcolorbox}[colback=blue!5!white,colframe=blue!75!black,title=AI DeepDive Insight]
-    \\textbf{Core Concept}: [Brief Concept Name] \\\\
-    \\textbf{Explanation}: [Clear, intuitive explanation of the technical concept above. Use analogies if helpful.] \\\\
-    \\textbf{Why it matters}: [Brief specific note on why this design choice is important.]
-    \\end{tcolorbox}
+    \begin{quote}
+    \textbf{[AI DeepDive]} \textbf{[Concept Name]} \\
+    \textbf{Explanation}: [Clear explanation] \\
+    \textbf{Why it matters}: [Importance]
+    \end{quote}
     ```
 
 3.  **Tone**: Professional, insightful, educational, yet concise. Do not state the obvious.
 4.  **Frequency**: Do NOT annotate every paragraph. Only annotate the top 3-5 most challenging/important concepts in the provided text chunk. If nothing is complex, return original text unchanged.
 5.  **Preservation**: Do NOT modify the original text. Only **insert** your analysis boxes.
-6.  **Language**: The explanation inside the box must be in **Chinese** (Simplified), as the user is reading a translated version.
+6.  **Language**: The explanation inside the box must be in **English**, matching the source document language. It will be translated to Chinese in a subsequent step.

@@ -35,7 +35,16 @@ TASK_STATUS: Dict[str, TaskStatus] = {}
 # Storage paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(BASE_DIR)) # ReadPaper/
-PAPER_STORAGE = os.path.join(PROJECT_ROOT, "paper_storage")
+
+# Detect Cloud Run Environment
+IS_CLOUD_RUN = os.getenv("K_SERVICE") is not None or os.getenv("CLOUD_RUN_ENV") == "true"
+
+if IS_CLOUD_RUN:
+    # In Cloud Run, only /tmp is writable
+    PAPER_STORAGE = "/tmp/paper_storage"
+    logger.info("Running in Cloud Run environment. Using /tmp/paper_storage.")
+else:
+    PAPER_STORAGE = os.path.join(PROJECT_ROOT, "paper_storage")
 
 # Services Setup
 # 1. Storage

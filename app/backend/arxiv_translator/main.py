@@ -9,6 +9,8 @@ from .compiler import compile_pdf
 from .config import ConfigManager
 from .deepdive import DeepDiveAnalyzer
 from .logging_utils import logger, log_ipc
+from .post_process import apply_post_processing
+from .latex_cleaner import clean_latex_directory
 
 try:
     from dotenv import load_dotenv
@@ -16,16 +18,7 @@ try:
 except ImportError:
     pass
 
-def strip_latex_comments(content: str) -> str:
-    """
-    Removes lines that are strictly LaTeX comments (starting with %).
-    Retains structure but reduces token count.
-    """
-    lines = content.splitlines()
-    # Keep lines that do NOT start with % (ignoring leading whitespace)
-    # We do not remove inline comments (e.g. "x = 1 % comment") to avoid breaking code with \%
-    cleaned_lines = [line for line in lines if not line.strip().startswith('%')]
-    return '\n'.join(cleaned_lines)
+
 
 def deepdive_analysis_worker(api_key, file_path, model_name="gemini-3-flash-preview"):
     try:
@@ -55,77 +48,14 @@ def translate_file_worker(api_key, model_name, file_path, main_tex_path):
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
             
-        # Pre-processing: Strip LaTeX comments to save tokens
-        content = strip_latex_comments(content)
+
             
         translated = translator.translate_latex(content)
         
-        # Inject ctex if main file
-        if os.path.abspath(file_path) == os.path.abspath(main_tex_path):
-            logger.debug(f"Worker interacting with main file: {file_name}")
-            import re
-            translated = re.sub(r'\\usepackage\{CJK.*\}', '', translated)
-            translated = re.sub(r'\\usepackage\{xeCJK\}', '', translated)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(translated)
             
-            if "\\documentclass" in translated and "ctex" not in translated:
-                preamble = "\n\\usepackage[fontset=fandol]{ctex}\n\\usepackage{xspace}\n"
-                
-                if "\\begin{document}" in translated:
-                    translated = translated.replace("\\begin{document}", preamble + "\\begin{document}")
-
-            # Remove CJK* environment tags (Tectonic/ctex handles this natively)
-            # Pattern: \begin{CJK*}{UTF8}{gbsn} ... \end{CJK*}
-            translated = re.sub(r'\\begin\{CJK\*\}\{.*?\}\{.*?\}', '', translated)
-            translated = re.sub(r'\\end\{CJK\*\}', '', translated)
-
-        # Conflict Resolution: \chinese command (e.g. from 2602.02276)
-        # Apply GLOBALLY to all files to handle usage in files that don't define it
-        # Scan for usage of \chinese
-        if r"\chinese" in translated:
-            logger.debug(f"Renaming potential \\chinese conflict in {file_name}...")
-            import re
-            # Use regex to avoid replacing \chinesefont etc.
-            translated = re.sub(r'\\chinese(?![a-zA-Z])', r'\\mychinese', translated)
-            
-            # If we renamed the definition, simplify it
-            if r"\newcommand{\mychinese}" in translated or r"\def\mychinese" in translated:
-                 # Redefine to pass-through (removing CJK* dependency)
-                 # Pattern: \newcommand{\mychinese}[1]{\begin{CJK*}{UTF8}{gbsn}{#1}\end{CJK*}}
-                 translated = re.sub(
-                    r'\\newcommand\{\\mychinese\}\[1\]\{.*?\\end\{CJK\*\}\}', 
-                    r'\\newcommand{\\mychinese}[1]{#1}', 
-                    translated, 
-                    flags=re.DOTALL
-                 )
-
-        if "{minted}" in translated:
-             logger.debug(f"Fixing minted package options in {file_name}...")
-             import re
-             translated = re.sub(r'\\usepackage\[.*?\]\{minted\}', r'\\usepackage[outputdir=.]{minted}', translated)
-        
-        # Switch backend=biber to backend=bibtex to avoid external dependency issues
-        if "backend=biber" in translated:
-            import re # Ensure re is imported if not already
-            translated = translated.replace("backend=biber", "backend=bibtex")
-            
-        # Fix duplicate labels (common in translation)
-        # Scan for \label{...} and keep only first occurrence of each unique label
-        label_pattern = re.compile(r'\\label\{([^}]+)\}')
-        seen_labels = set()
-        
-        def replace_label(match):
-            lbl = match.group(1)
-            if lbl in seen_labels:
-                return f"% Duplicate label removed: {lbl}"
-            seen_labels.add(lbl)
-            return match.group(0)
-            
-        translated = label_pattern.sub(replace_label, translated)
-        
-        # General LaTeX Fixes for LLM artifacts
-        # Fix broken escapes like "\ }" -> "\}"
-        translated = translated.replace(r"\ }", r"\}")
-        translated = translated.replace(r"\ {", r"\{")
+        return True
         
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(translated)
@@ -229,6 +159,11 @@ def main():
             shutil.rmtree(source_zh_dir) # Always fresh copy for translation
         shutil.copytree(source_dir, source_zh_dir)
         
+        # 2.5 Clean LaTeX comments
+        log_ipc(f"PROGRESS:EXTRACTING:Cleaning LaTeX comments...")
+        cleaned_count = clean_latex_directory(source_zh_dir)
+        logger.info(f"Cleaned {cleaned_count} files in {source_zh_dir}")
+        
         main_tex = find_main_tex(source_zh_dir)
         logger.info(f"Main TeX file found: {main_tex}")
         # print(f"Main TeX file: {main_tex}", flush=True)
@@ -253,8 +188,35 @@ def main():
         total_files = len(tex_files_to_translate)
         logger.info(f"Found {total_files} TeX files to translate.")
         
-        # Concurrent Translation
+        max_workers = 4 # Reduced from 12 for stability
+        
+        # 3. DeepDive Analysis (Now runs on English source BEFORE translation)
         from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        if args.deepdive:
+            log_ipc(f"PROGRESS:ANALYZING:Starting parallel AI DeepDive Analysis ({max_workers} workers)...")
+            aux_count = 0
+            
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                future_to_file = {
+                    executor.submit(deepdive_analysis_worker, api_key, f, model_name): f 
+                    for f in tex_files_to_translate
+                }
+                
+                for future in as_completed(future_to_file):
+                    f_path = future_to_file[future]
+                    fname = os.path.basename(f_path)
+                    aux_count += 1
+                    try:
+                        is_changed, _ = future.result()
+                        if is_changed:
+                            log_ipc(f"PROGRESS:ANALYZING:{aux_count}:{total_files}:Analyzed {fname}")
+                        else:
+                            log_ipc(f"PROGRESS:ANALYZING:{aux_count}:{total_files}:Skipped {fname}")
+                    except Exception as e:
+                        logger.error(f"Analysis failed for {fname}: {e}", exc_info=True)
+
+        # 4. Concurrent Translation
         
         # Helper to be pickled
         # define worker inside main or import? needs to be picklable, so top level is best.
@@ -279,7 +241,7 @@ def main():
         # WAIT, if I edit the loop to call `translate_file_worker`, and then edit top to add it, the file is broken in between. That's fine.
         
         completed_count = 0
-        with ProcessPoolExecutor(max_workers=12) as executor:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {
                 executor.submit(translate_file_worker, api_key, model_name, f, main_tex): f 
                 for f in tex_files_to_translate
@@ -297,31 +259,14 @@ def main():
                     logger.error(f"Generated an exception for {file_name}: {exc}", exc_info=True)
                     log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Failed {file_name}")
 
-        # 3.5. DeepDive Analysis (Optional)
-        if args.deepdive:
-            log_ipc(f"PROGRESS:ANALYZING:Starting parallel AI DeepDive Analysis (12 workers)...")
-            aux_count = 0
-            
-            with ProcessPoolExecutor(max_workers=12) as executor:
-                future_to_file = {
-                    executor.submit(deepdive_analysis_worker, api_key, f, model_name): f 
-                    for f in tex_files_to_translate
-                }
-                
-                for future in as_completed(future_to_file):
-                    f_path = future_to_file[future]
-                    fname = os.path.basename(f_path)
-                    aux_count += 1
-                    try:
-                        is_changed, _ = future.result()
-                        if is_changed:
-                            log_ipc(f"PROGRESS:ANALYZING:{aux_count}:{total_files}:Analyzed {fname}")
-                        else:
-                            log_ipc(f"PROGRESS:ANALYZING:{aux_count}:{total_files}:Skipped {fname}")
-                    except Exception as e:
-                        logger.error(f"Analysis failed for {fname}: {e}", exc_info=True)
+
 
         # 4. Compile
+        
+        # 3.8 Post-Processing (Robustness Fixes)
+        log_ipc(f"PROGRESS:POST_PROCESSING:Applying robustness fixes...")
+        apply_post_processing(source_zh_dir, main_tex)
+        
         log_ipc(f"PROGRESS:COMPILING:Compiling PDF with Tectonic...")
         compile_pdf(source_zh_dir, main_tex)
         
@@ -334,10 +279,9 @@ def main():
             final_pdf = args.output
         else:
             suffix = "_zh"
-            if "pro" in model_name.lower():
-                suffix = "_zh_pro"
-            elif "flash" in model_name.lower():
-                suffix = "_zh_flash"
+            if args.deepdive:
+                suffix = "_zh_deepdive"
+            
             final_pdf = f"{arxiv_id}{suffix}.pdf"
         
         if os.path.exists(compiled_pdf):

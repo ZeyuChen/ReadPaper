@@ -1,0 +1,70 @@
+steps:
+  # 1. Build Backend Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA', '-f', 'app/backend/Dockerfile', '.']
+    id: 'Build Backend'
+
+  # 2. Build Frontend Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA', '-f', 'app/frontend/Dockerfile', '.']
+    id: 'Build Frontend'
+
+  # 3. Push Backend Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA']
+    id: 'Push Backend'
+
+  # 4. Push Frontend Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA']
+    id: 'Push Frontend'
+
+  # 5. Deploy Backend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'readpaper-backend'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '4Gi'
+      - '--set-env-vars'
+      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY}'
+    id: 'Deploy Backend'
+
+  # 6. Deploy Frontend to Cloud Run
+  # We need to discover the Backend URL first, or assume a stable URL.
+  # For Cloud Build to know the URL dynamically, we can query it.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: /bin/bash
+    args:
+      - '-c'
+      - |
+        BACKEND_URL=$(gcloud run services describe readpaper-backend --platform managed --region ${_REGION} --format 'value(status.url)')
+        echo "Backend URL: $$BACKEND_URL"
+        gcloud run deploy readpaper-frontend \
+          --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA \
+          --region ${_REGION} \
+          --platform managed \
+          --allow-unauthenticated \
+          --set-env-vars NEXT_PUBLIC_API_URL=$$BACKEND_URL
+    id: 'Deploy Frontend'
+
+substitutions:
+  _REGION: 'us-central1'
+  _BUCKET_NAME: 'readpaper-storage' 
+  # _GEMINI_API_KEY should be set in the Trigger configuration secrets
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

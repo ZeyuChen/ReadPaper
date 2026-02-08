@@ -15,13 +15,34 @@ export default function Home() {
   const [library, setLibrary] = useState<any[]>([]);
   const [useDeepDive, setUseDeepDive] = useState(false);
 
+  // Library UI State
+  const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 6;
+
+  // Filter and Pagination Logic
+  const filteredLibrary = library.filter((paper: any) => {
+    if (!searchTerm) return true;
+    const title = (paper.title || '').toLowerCase();
+    const id = (paper.id || '').toLowerCase();
+    const query = searchTerm.toLowerCase();
+    return title.includes(query) || id.includes(query);
+  });
+
+  const totalPages = Math.ceil(filteredLibrary.length / ITEMS_PER_PAGE);
+  const paginatedLibrary = filteredLibrary.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
   useEffect(() => {
     fetchLibrary();
   }, [arxivId]); // Reload when returning from split view
 
   const fetchLibrary = async () => {
     try {
-      const res = await fetch('http://localhost:8000/library');
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${apiUrl}/library`);
       if (res.ok) {
         const data = await res.json();
         setLibrary(data);
@@ -55,8 +76,10 @@ export default function Home() {
         throw new Error("Could not extract arXiv ID");
       }
 
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
       // Call Backend
-      const response = await fetch('http://localhost:8000/translate', {
+      const response = await fetch(`${apiUrl}/translate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -77,7 +100,7 @@ export default function Home() {
       // Poll STATUS
       const pollInterval = setInterval(async () => {
         try {
-          const statusRes = await fetch(`http://localhost:8000/status/${extractedId}`);
+          const statusRes = await fetch(`${apiUrl}/status/${extractedId}`);
           const statusData = await statusRes.json();
           // console.log("Status:", statusData.status, "Progress:", statusData.progress, "Message:", statusData.message);
 
@@ -118,7 +141,8 @@ export default function Home() {
     if (!confirm('Are you sure you want to delete this paper? This will remove all translated files.')) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/library/${id}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${apiUrl}/library/${id}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -184,7 +208,7 @@ export default function Home() {
           <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${useDeepDive ? 'bg-blue-600 border-blue-600' : 'bg-white border-gray-300'}`}>
             {useDeepDive && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>}
           </div>
-          <span>Enable Deep Dive (Gemini 3.0 Pro)</span>
+          <span>Enable Deep Dive (AI Analysis)</span>
         </div>
 
         {loading && (
@@ -211,12 +235,31 @@ export default function Home() {
 
       {/* Library Section */}
       <div className="w-full max-w-4xl px-4 py-8">
-        <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-          My Library <span className="text-sm font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{library.length}</span>
-        </h2>
+        <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+            My Library <span className="text-sm font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{library.length}</span>
+          </h2>
+
+          {/* Library Search */}
+          <div className="relative w-full md:w-64">
+            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
+              <Search size={16} />
+            </div>
+            <input
+              type="text"
+              placeholder="Search title..."
+              className="w-full py-2 pl-9 pr-4 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-200 outline-none transition-all"
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1); // Reset to first page on search
+              }}
+            />
+          </div>
+        </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
-          {library.map((paper: any) => (
+          {paginatedLibrary.map((paper: any) => (
             <div
               key={paper.id}
               onClick={() => setArxivId(paper.id)}
@@ -260,12 +303,42 @@ export default function Home() {
               </div>
             </div>
           ))}
+
           {library.length === 0 && (
             <div className="col-span-2 text-center py-10 text-gray-400 bg-white rounded-xl border border-dashed">
               No papers in your library yet. Translate one to get started!
             </div>
           )}
+
+          {library.length > 0 && paginatedLibrary.length === 0 && (
+            <div className="col-span-2 text-center py-10 text-gray-400 bg-white rounded-xl border border-dashed">
+              No papers found matching "{searchTerm}".
+            </div>
+          )}
         </div>
+
+        {/* Pagination Controls */}
+        {totalPages > 1 && (
+          <div className="flex justify-center items-center gap-4 mt-8">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-gray-600">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="w-full max-w-4xl px-4 py-8">
@@ -281,7 +354,8 @@ function TaskMonitor() {
   useEffect(() => {
     const fetchTasks = async () => {
       try {
-        const res = await fetch('http://localhost:8000/tasks');
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const res = await fetch(`${apiUrl}/tasks`);
         if (res.ok) {
           const data = await res.json();
           // Filter to show interesting tasks (processing, failed, or completed recently)
@@ -318,8 +392,8 @@ function TaskMonitor() {
                   {task.arxiv_id}
                 </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${task.status === 'completed' ? 'bg-green-100 text-green-700' :
-                    task.status === 'failed' ? 'bg-red-100 text-red-700' :
-                      'bg-blue-100 text-blue-700'
+                  task.status === 'failed' ? 'bg-red-100 text-red-700' :
+                    'bg-blue-100 text-blue-700'
                   }`}>
                   {task.status}
                 </span>
