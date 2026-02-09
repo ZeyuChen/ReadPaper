@@ -1,7 +1,7 @@
 
 
 <div align="center">
-  <img src="logo.png" width="120" alt="ReadPaper Logo" />
+  <img src="logo.svg" width="120" alt="ReadPaper Logo" />
   <h1>ReadPaper: Bilingual AI ArXiv Reader</h1>
 </div>
 
