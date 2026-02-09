@@ -42,6 +42,23 @@ graph TD
     GCS -->|Serve PDFs| FE
 ```
 
+## 🧠 DeepDive Analysis
+
+The **DeepDive** feature enhances the reading experience by injecting AI-generated insights directly into the paper.
+
+1.  **Analysis**: The system analyzes the abstract and introduction to generate a high-level summary and identify key technical concepts.
+2.  **Insight Generation**: Gemini generates "Insight Cards" for complex terms or equations.
+3.  **Injection**: These insights are translated and embedded into the final LaTeX source as side notes or margin comments before compilation, appearing natively in the translated PDF.
+
+## 📋 Prerequisites
+
+Before running the project locally, ensure you have the following installed:
+
+-   **Python 3.11+**: For the backend service and translation logic.
+-   **Node.js 18+**: For the Next.js frontend.
+-   **Docker**: Required for the backend if you want to ensure a consistent TeX Live environment.
+-   **Google Cloud SDK**: For deploying to Cloud Run (optional for local dev).
+-   **Gemini API Key**: Get one from [Google AI Studio](https://aistudio.google.com/).
 
 ## 🛠️ Usage
 
@@ -88,12 +105,13 @@ The included `cloudbuild.yaml` automates the build and deploy process on every p
 ```
 ├── app/
 │   ├── backend/          # FastAPI Service (Python 3.11)
+│   │   ├── arxiv_translator/ # Core Translation Logic & DeepDive
+│   │   ├── services/     # Auth, Library, and Storage Services
 │   │   ├── Dockerfile    # Full TeX Live environment
 │   │   └── ...
 │   ├── frontend/         # Next.js Application
 │   │   ├── Dockerfile    # Standalone output build
 │   │   └── ...
-├── arxiv-translator/     # Core Translation Logic
 ├── cloudbuild.yaml       # CI/CD Configuration
 └── deployment.md         # Manual Deployment Guide
 ```

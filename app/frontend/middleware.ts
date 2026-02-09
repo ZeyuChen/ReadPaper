@@ -6,8 +6,12 @@ export default auth((req) => {
     const isOnDashboard = req.nextUrl.pathname === '/' || req.nextUrl.pathname.startsWith('/library')
 
     if (isOnDashboard) {
+        if (process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true') return
         if (isLoggedIn) return
-        return Response.redirect(new URL('/login', req.nextUrl))
+        // Allow access to homepage, but protect specific routes if needed
+        if (req.nextUrl.pathname.startsWith('/library')) {
+            return Response.redirect(new URL('/login', req.nextUrl))
+        }
     }
 })
 

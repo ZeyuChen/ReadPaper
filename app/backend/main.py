@@ -32,14 +32,23 @@ app.add_middleware(
 
 # Status structure
 class TaskStatus(TypedDict):
-    status: str # "queued", "processing", "completed", "failed"
-    message: str # Granular details like "Translating abstract.tex..."
+    """
+    Represents the status of a background translation task.
+    
+    Attributes:
+        status: Current state ("queued", "processing", "completed", "failed").
+        message: Human-readable status message (e.g., "Translating abstract.tex...").
+        progress_percent: Integer percentage (0-100).
+        details: Optional detailed error message or context.
+    """
+    status: str 
+    message: str 
     progress_percent: int
     details: str
 
 # Global Task Status (In-memory, simpler than DB for now, but not persistent across restarts)
 # Key: arxiv_id (Global? No, should be user-specific to avoid collisions?)
-# Actually, task status is ephemeral. We can key by specific task ID or just arxiv_id if we assume one task per paper per user.
+# actually, task status is ephemeral. We can key by specific task ID or just arxiv_id if we assume one task per paper per user.
 # Let's verify isolation: If User A translates X, and User B translates X.
 # If we key by X, they collide.
 # We should key by `user_id:arxiv_id`.
@@ -126,11 +135,26 @@ def update_status(task_key: str, status: str, message: str = "", progress: int =
     }
 
 async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool, user_id: str, storage_service: StorageService, library_manager: LibraryManager):
-    """"
-    Runs arxiv-translator and streams output to update status.
-    Now simpler: We just need to download/upload to the user's storage.
-    Note: The actual `arxiv-translator` subprocess still runs locally in a temp dir or the shared workspace.
-    To support isolation, we should use a unique workspace per task or per user.
+    """
+    Executes the translation pipeline in a background task.
+    
+    This function performs the following steps:
+    1. Sets up a temporary local workspace.
+    2. Downloads the original PDF from arXiv.
+    3. Invokes the `arxiv-translator` module as a subprocess.
+    4. Streams stdout/stderr from the subprocess to parse progress updates.
+    5. Updates the global TASK_STATUS dictionary in real-time.
+    6. Uploads the final translated PDF to the user's storage (Local or GCS).
+    7. Updates the user's Library.
+    
+    Args:
+        arxiv_url: The full URL of the arXiv paper.
+        model: The Gemini model to use (e.g., 'flash', 'pro').
+        arxiv_id: The extracted arXiv ID.
+        deepdive: Whether to enable DeepDive analysis.
+        user_id: The ID of the requesting user.
+        storage_service: The user-scoped storage service.
+        library_manager: The user-scoped library manager.
     """
     task_key = f"{user_id}:{arxiv_id}"
     try:
@@ -411,6 +435,17 @@ async def get_paper(
     file_type: str,
     storage_service: StorageService = Depends(get_storage_service)
 ):
+    """
+    Serves the PDF file (original or translated) for a specific paper.
+    
+    Current Implementation:
+    - For LocalStorage: Serves the file directly from the filesystem using FileResponse.
+    - For GCS: Generates a signed URL and redirects the client to it.
+    
+    Args:
+        arxiv_id: The ID of the paper.
+        file_type: "original" or "translated".
+    """
     # Proxy file download from User Storage
     # List files to find match
     files = storage_service.list_files(f"{arxiv_id}/")
@@ -428,21 +463,13 @@ async def get_paper(
     if not target:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Read content? Or stream?
-    # For GCS, better to redirect to signed URL if possible, but StorageService abstraction hides it.
-    # Current StorageService implementation reads into memory (read_file). BAD for PDFs.
-    # But `LocalStorageService` has file path.
-    # `GCSStorageService` has `read_file` doing download_as_text (BAD).
-    
-    # We need a proper `get_download_link` or `stream_file` method.
-    # For now, let's hack:
-    
     if isinstance(storage_service, LocalStorageService):
         full_path = storage_service._get_full_path(target)
         return FileResponse(full_path)
     elif isinstance(storage_service, GCSStorageService):
-        # Generate Signed URL
+        # Generate Signed URL for direct access (more efficient than proxying)
         blob = storage_service.bucket.blob(storage_service._get_gcs_path(target))
+        # Note: This requires the service account to have Token Creator permissions
         if blob.exists():
             url = blob.generate_signed_url(version="v4", expiration=3600, method="GET")
             return RedirectResponse(url)

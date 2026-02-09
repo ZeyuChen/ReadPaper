@@ -8,6 +8,17 @@ logger = setup_logger("LibraryManager")
 from .storage import StorageService
 
 class LibraryManager:
+    """
+    Manages the user's personal library of papers.
+    
+    Persistence Strategy:
+    Currently uses a simple `library.json` file stored in the user's storage root.
+    
+    Concurrency Note:
+    This implementation is NOT thread-safe for concurrent writes from multiple processes
+    (though safe enough for single-user async loop if not scaling horizontally).
+    For production scaling, this should be replaced by a proper database (PostgreSQL/Firestore).
+    """
     def __init__(self, storage: StorageService):
         self.storage = storage
         self.library_file = "library.json" # Relative to storage root
@@ -39,6 +50,10 @@ class LibraryManager:
             logger.error(f"Failed to save library: {e}")
 
     async def add_paper(self, arxiv_id: str, model: str, title: str, abstract: str, authors: List[str], categories: List[str]):
+        """
+        Adds or updates a paper in the library.
+        If the paper exists, it updates the version info for the given model.
+        """
         await self._load_library()
         
         if arxiv_id not in self._cache:

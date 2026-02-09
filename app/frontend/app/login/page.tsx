@@ -5,26 +5,23 @@ import { FcGoogle } from "react-icons/fc"
 
 export default function LoginPage() {
     return (
-        <div className="flex min-h-screen flex-col items-center justify-center bg-[#f8f9fa] dark:bg-[#0a0a0a] text-foreground p-4">
-            {/* Background decoration */}
-            <div className="fixed inset-0 -z-10 h-full w-full bg-white dark:bg-black [background:radial-gradient(125%_125%_at_50%_10%,#fff_40%,#63e_100%)] dark:[background:radial-gradient(125%_125%_at_50%_10%,#000_40%,#63e_100%)] opacity-20"></div>
-
-            <div className="w-full max-w-md space-y-8 bg-white/80 dark:bg-black/50 backdrop-blur-xl p-8 rounded-2xl shadow-2xl border border-gray-200/50 dark:border-white/10">
-                <div className="flex flex-col items-center text-center">
-                    <div className="relative h-20 w-20 mb-6 transition-transform hover:scale-105 duration-300">
+        <div className="flex min-h-screen flex-col items-center justify-center bg-[#f0f2f5] text-[#202124] p-4 font-sans">
+            <div className="w-full max-w-[448px] bg-white p-10 rounded-[28px] shadow-none sm:border sm:border-[#dadce0] flex flex-col items-center">
+                <div className="mb-8 flex flex-col items-center">
+                    <div className="relative h-12 w-12 mb-4">
                         <Image
-                            src="/logo.png"
+                            src="/logo.svg"
                             alt="ReadPaper Logo"
                             fill
-                            className="object-contain drop-shadow-2xl"
+                            className="object-contain"
                             priority
                         />
                     </div>
-                    <h2 className="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-gray-900 via-blue-800 to-gray-900 dark:from-white dark:via-blue-200 dark:to-white">
-                        Welcome back
-                    </h2>
-                    <p className="mt-2 text-sm text-muted-foreground text-gray-500 dark:text-gray-400">
-                        Sign in to access your personal research library
+                    <h1 className="text-2xl font-normal text-[#202124] mb-2">
+                        Sign in
+                    </h1>
+                    <p className="text-base text-[#202124]">
+                        to continue to ReadPaper
                     </p>
                 </div>
 
@@ -33,24 +30,33 @@ export default function LoginPage() {
                         "use server"
                         await signIn("google", { redirectTo: "/" })
                     }}
-                    className="mt-8 space-y-6"
+                    className="w-full space-y-8"
                 >
-                    <button
-                        type="submit"
-                        className="group relative flex w-full justify-center items-center gap-3 rounded-xl bg-white dark:bg-zinc-900 px-4 py-3 text-sm font-semibold text-gray-700 dark:text-gray-200 shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-700 hover:bg-gray-50 dark:hover:bg-zinc-800 focus:outline-offset-0 transition-all duration-200 hover:shadow-md"
-                    >
-                        <FcGoogle className="h-5 w-5" />
-                        <span>Continue with Google</span>
-                    </button>
+                    <div className="w-full flex justify-center">
+                         <button
+                            type="submit"
+                            className="flex items-center justify-center gap-3 w-full max-w-[300px] bg-white text-[#1f1f1f] border border-[#747775] hover:bg-[#f0f4f9] hover:border-[#1f1f1f] px-6 py-2.5 rounded-full text-sm font-medium transition-colors duration-200"
+                        >
+                            <FcGoogle className="h-5 w-5" />
+                            <span>Continue with Google</span>
+                        </button>
+                    </div>
                 </form>
 
-                <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                        <span className="w-full border-t border-gray-200 dark:border-gray-800" />
-                    </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-transparent px-2 text-gray-500">Secure Access</span>
-                    </div>
+                <div className="mt-14 text-xs text-[#5f6368] text-center max-w-xs">
+                    <p>
+                        By continuing, you agree to the Terms of Service and Privacy Policy.
+                    </p>
+                </div>
+            </div>
+             <div className="mt-6 flex justify-between w-full max-w-[448px] text-xs text-[#5f6368]">
+                <div className="flex gap-4">
+                    <span>English (United States)</span>
+                </div>
+                <div className="flex gap-4">
+                    <span>Help</span>
+                    <span>Privacy</span>
+                    <span>Terms</span>
                 </div>
             </div>
         </div>

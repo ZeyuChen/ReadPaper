@@ -6,14 +6,28 @@ The frontend application for ReadPaper, built with **Next.js 14**, **Tailwind CS
 
 - **Framework**: Next.js 14 (App Router)
 - **Styling**: Tailwind CSS
-- **Icons**: Lucide React
-- **PDF Rendering**: Native `<iframe>` embedding (MVP)
+- **Authentication**: NextAuth.js (v5 Beta) with Google Provider
+- **Icons**: Lucide React & React Icons
+- **PDF Rendering**: Native `<iframe>` embedding with authenticated fetching
+
+## 🔐 Authentication
+
+The app uses **NextAuth.js** for secure Google Sign-In.
+
+1.  Set up OAuth credentials in the [Google Cloud Console](https://console.cloud.google.com/).
+2.  Add the Client ID and Secret to your `.env` file:
+    ```bash
+    AUTH_GOOGLE_ID=your_client_id
+    AUTH_GOOGLE_SECRET=your_client_secret
+    AUTH_SECRET=your_random_secret_string
+    ```
 
 ## Key Components
 
-- `app/page.tsx`: Main entry point handling URL input and state management.
-- `components/SplitView.tsx`: The core reading interface displaying Original and Translated PDFs side-by-side.
-- `components/ui`: Reusable UI components (Buttons, Inputs, Progress Bars).
+- **`app/page.tsx`**: Main entry point handling URL input and state management.
+- **`app/login/page.tsx`**: Custom login page designed to match Google's aesthetic.
+- **`components/SplitView.tsx`**: The core reading interface. It manages side-by-side PDF viewing and fetches protected PDF content using the session's ID token.
+- **`components/ClientHome.tsx`**: The main dashboard showing the search bar and the user's paper library.
 
 ## Getting Started
 

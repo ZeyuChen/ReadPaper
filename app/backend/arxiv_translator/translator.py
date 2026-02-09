@@ -6,6 +6,12 @@ import time
 from .logging_utils import logger
 
 class GeminiTranslator:
+    """
+    Handles the translation of LaTeX content using the Google Gemini API.
+    
+    This class manages the API client, system prompts, and implements robust
+    chunking strategies to handle large LaTeX documents while preserving structure.
+    """
     def __init__(self, api_key: str, model_name: str = "gemini-3-flash-preview"): 
         self.api_key = api_key
         # Default to Gemini 3 Flash Preview as per docs
@@ -28,15 +34,31 @@ class GeminiTranslator:
 
     def translate_latex(self, latex_content: str) -> str:
         """
-        Translates LaTeX content from English to Chinese using Gemini.
-        Preserves LaTeX structure.
+        Translates a full LaTeX document or segment from English to Chinese.
+        
+        Args:
+            latex_content: The raw LaTeX string to translate.
+            
+        Returns:
+            The translated LaTeX string with structure preserved.
         """
         # Always use chunking to ensure stability and partial progress
         # This handles both small and large files uniformly using the robust streaming approach
         return self._translate_chunked(latex_content)
 
     def _translate_chunked(self, content: str, chunk_size=150) -> str:
-        """Splits content into chunks of ~chunk_size lines and translates them using streaming."""
+        """
+        Splits content into manageable chunks and translates them sequentially.
+        
+        Why Chunking?
+        1. Context Window: Prevents exceeding the model's output token limit.
+        2. Stability: Smaller chunks are less likely to result in generation errors or timeouts.
+        3. Recovery: Allows for partial success (though current implementation assumes all pass).
+        
+        Args:
+            content: The text to split.
+            chunk_size: Approximate number of lines per chunk.
+        """
         lines = content.split('\n')
         chunks = []
         current_chunk = []
@@ -85,7 +107,7 @@ class GeminiTranslator:
                 cleaned_fallback = self._clean_output(chunk)
                 translated_chunks.append(cleaned_fallback)
             
-            # Rate limiting for Pro model to avoid overloading
+            # Rate limiting for Pro model to avoid overloading quotas
             if "pro" in self.model_name.lower():
                 time.sleep(2)  # 2 seconds delay between chunks
                 
