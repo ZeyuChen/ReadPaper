@@ -1,7 +1,8 @@
 
 # Use a base image with full TeX Live installation
 # This image is large but necessary for compiling complex academic papers
-FROM ghcr.io/xu-cheng/texlive-full:latest
+ARG BASE_IMAGE=ghcr.io/xu-cheng/texlive-full:latest
+FROM ${BASE_IMAGE}
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -21,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY app/backend/requirements.txt .
 
 # Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip list && ls -R /opt/venv/lib/python*/site-packages/feedparser*
 
 # Copy the application code
 # We copy the entire 'app' directory to maintain package structure

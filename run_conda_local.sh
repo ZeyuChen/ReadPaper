@@ -11,7 +11,9 @@ pkill -f "next dev" || true
 # Source environment variables if present
 if [ -f .env ]; then
     echo "Loading .env..."
+    set -a
     source .env
+    set +a
 fi
 
 # Ensure Conda environment is used

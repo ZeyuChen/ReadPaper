@@ -24,12 +24,25 @@ def compile_pdf(source_dir: str, main_tex_file: str):
     try:
         # Check if latexmk is installed natively
         latexmk_path = shutil.which("latexmk")
+
+        # Explicit check for common MacOS TeX paths if not found in PATH
+        if not latexmk_path and os.uname().sysname == 'Darwin':
+             possible_paths = [
+                 "/Library/TeX/texbin/latexmk",
+                 "/usr/local/bin/latexmk",
+                 "/opt/homebrew/bin/latexmk"
+             ]
+             for p in possible_paths:
+                 if os.path.exists(p) and os.access(p, os.X_OK):
+                     latexmk_path = p
+                     logger.info(f"Found latexmk content at {p} via explicit check.")
+                     break
         
         if latexmk_path:
             logger.info(f"Found native latexmk at {latexmk_path}. Using native compilation.")
             # Native execution (Cloud Run or Local with TeX Live)
             cmd = [
-                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-file-line-error", "-outdir=.", rel_tex_file
+                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-f", "-file-line-error", "-outdir=.", rel_tex_file
             ]
         else:
             logger.info("Native latexmk not found. Falling back to Dockerized TeX Live.")
@@ -40,11 +53,12 @@ def compile_pdf(source_dir: str, main_tex_file: str):
             
             cmd = [
                 "docker", "run", "--rm",
+                "--platform", "linux/amd64",
                 "-v", f"{os.path.abspath(source_dir)}:/workdir",
                 "-w", "/workdir",
                 "--user", f"{uid}:{gid}",
                 docker_image,
-                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-file-line-error", "-outdir=.", rel_tex_file
+                "latexmk", "-xelatex", "-bibtex", "-interaction=nonstopmode", "-f", "-file-line-error", "-outdir=.", rel_tex_file
             ]
         
         logger.debug(f"Running command: {' '.join(cmd)}")

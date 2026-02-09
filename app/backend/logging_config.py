@@ -3,10 +3,26 @@ import logging.handlers
 import os
 
 # Define log directory
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+# Detect Cloud Run Environment
+IS_CLOUD_RUN = os.getenv("K_SERVICE") is not None or os.getenv("CLOUD_RUN_ENV") == "true"
+
+# Define log directory
+if IS_CLOUD_RUN:
+    LOG_DIR = "/tmp/logs"
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    LOG_DIR = os.path.join(BASE_DIR, "logs")
+
 if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
+    try:
+        os.makedirs(LOG_DIR)
+    except Exception as e:
+        print(f"Failed to create log dir {LOG_DIR}: {e}")
+        # Fallback to tmp if not already
+        if LOG_DIR != "/tmp/logs":
+             LOG_DIR = "/tmp/logs"
+             if not os.path.exists(LOG_DIR):
+                 os.makedirs(LOG_DIR)
 
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
 

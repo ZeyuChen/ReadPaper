@@ -1,5 +1,24 @@
 steps:
-  # 0. Run Tests
+  # -------------------------------------------------------------------------
+  # 1. PREPARE CACHE (Parallel)
+  # -------------------------------------------------------------------------
+  
+  # 1a. Pull previous Backend image for caching (Parallel)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: ['-c', 'docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest || true']
+    waitFor: ['-']
+    id: 'Pull Backend Cache'
+
+  # 1b. Pull previous Frontend image for caching (Parallel)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args: ['-c', 'docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:latest || true']
+    waitFor: ['-']
+    id: 'Pull Frontend Cache'
+
+  # 1c. Run Tests (Parallel with cache pulling)
+  # Runs on the host VM while images are pulling/building
   - name: 'python:3.11'
     entrypoint: /bin/bash
     args:
@@ -12,29 +31,80 @@ steps:
       - 'GEMINI_API_KEY=${_GEMINI_API_KEY}'
       - 'GCS_BUCKET_NAME=${_BUCKET_NAME}'
       - 'STORAGE_TYPE=gcs'
+    waitFor: ['-']
     id: 'Run Unit & E2E Tests'
 
-  # 1. Build Backend Image
+  # -------------------------------------------------------------------------
+  # 2. BUILD (Parallel)
+  # -------------------------------------------------------------------------
+
+  # 2a. Build Backend Image
+  # Uses the mirrored base image and cache-from
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID', '-f', 'app/backend/Dockerfile', '.']
+    args: 
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest'
+      - '--build-arg'
+      - 'BASE_IMAGE=${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-texlive-base:latest'
+      - '-f'
+      - 'app/backend/Dockerfile'
+      - '.'
+    waitFor: ['Pull Backend Cache']
     id: 'Build Backend'
 
-  # 2. Build Frontend Image
+  # 2b. Build Frontend Image
+  # Uses cache-from
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID', '-f', 'app/frontend/Dockerfile', '.']
+    args: 
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:latest'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:latest'
+      - '-f'
+      - 'app/frontend/Dockerfile'
+      - '.'
+    waitFor: ['Pull Frontend Cache']
     id: 'Build Frontend'
 
-  # 3. Push Backend Image
+  # -------------------------------------------------------------------------
+  # 3. PUSH (Parallel)
+  # -------------------------------------------------------------------------
+
+  # 3a. Push Backend Image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID']
+    waitFor: ['Build Backend', 'Run Unit & E2E Tests']
     id: 'Push Backend'
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest']
+    waitFor: ['Build Backend', 'Run Unit & E2E Tests']
+    id: 'Push Backend Latest'
 
-  # 4. Push Frontend Image
+  # 3b. Push Frontend Image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID']
+    waitFor: ['Build Frontend', 'Run Unit & E2E Tests']
     id: 'Push Frontend'
 
-  # 5. Deploy Backend to Cloud Run
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:latest']
+    waitFor: ['Build Frontend', 'Run Unit & E2E Tests']
+    id: 'Push Frontend Latest'
+
+  # -------------------------------------------------------------------------
+  # 4. DEPLOY (Sequential)
+  # -------------------------------------------------------------------------
+
+  # 4a. Deploy Backend
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -52,11 +122,10 @@ steps:
       - '4Gi'
       - '--set-env-vars'
       - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs'
+    waitFor: ['Push Backend']
     id: 'Deploy Backend'
 
-  # 6. Deploy Frontend to Cloud Run
-  # We need to discover the Backend URL first, or assume a stable URL.
-  # For Cloud Build to know the URL dynamically, we can query it.
+  # 4b. Deploy Frontend
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: /bin/bash
     args:
@@ -65,11 +134,19 @@ steps:
         BACKEND_URL=$(gcloud run services describe readpaper-backend --platform managed --region ${_REGION} --format 'value(status.url)')
         echo "Backend URL: $$BACKEND_URL"
         
-        # Try to fetch existing frontend URL (for updates)
-        FRONTEND_URL=$(gcloud run services describe readpaper-frontend --platform managed --region ${_REGION} --format 'value(status.url)' || echo "")
-        echo "Frontend URL: $$FRONTEND_URL"
+        if [ -z "$$BACKEND_URL" ]; then
+          echo "Error: Failed to retrieve Backend URL."
+          exit 1
+        fi
         
-        # Generate a random secret for NextAuth
+        echo "DEBUG: Deploying Frontend with API_URL=$$BACKEND_URL"
+        
+        FRONTEND_URL=$(gcloud run services describe readpaper-frontend --platform managed --region ${_REGION} --format 'value(status.url)' || echo "")
+        
+        # Hardcode for now if variable passing is flaky? No, just debug print first.
+        # Ensure we are using the right variable in Next.js.
+        # API_URL is used in next.config.ts.
+        
         NEXTAUTH_SECRET=$(openssl rand -base64 32)
         
         gcloud run deploy readpaper-frontend \
@@ -77,19 +154,24 @@ steps:
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
-          --set-env-vars NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=$$NEXTAUTH_SECRET,AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL
+          --set-env-vars API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=$$NEXTAUTH_SECRET,AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL
+    waitFor: ['Push Frontend', 'Deploy Backend']
     id: 'Deploy Frontend'
 
 substitutions:
   _REGION: 'us-central1'
-  _BUCKET_NAME: 'readpaper-storage-gen-lang-client-0098594892' 
+  _BUCKET_NAME: 'readpaper-storage-gen-lang-client-0098594892'
   _GOOGLE_CLIENT_ID: 'MUST_BE_PROVIDED'
   _GOOGLE_CLIENT_SECRET: 'MUST_BE_PROVIDED'
-  # _GEMINI_API_KEY should be set in the Trigger configuration secrets
 
 images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest'
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:latest'
 
 options:
+
   logging: CLOUD_LOGGING_ONLY
+
+  machineType: 'E2_HIGHCPU_8'

@@ -112,7 +112,7 @@ def main():
     if model_name.lower() == "flash":
         model_name = "gemini-3-flash-preview"
     elif model_name.lower() == "pro":
-        model_name = "gemini-3-pro-preview"
+        model_name = "gemini-3-flash-preview"
     
     # Extract ID
     # heuristics: 2602.04705 or https://arxiv.org/abs/2602.04705 or https://arxiv.org/pdf/2602.04705
@@ -167,6 +167,15 @@ def main():
         main_tex = find_main_tex(source_zh_dir)
         logger.info(f"Main TeX file found: {main_tex}")
         # print(f"Main TeX file: {main_tex}", flush=True)
+
+        # 2.6 Pre-flight Compilation Check (Establish Baseline)
+        log_ipc(f"PROGRESS:COMPILING:Running pre-flight compilation check...")
+        pre_success, _ = compile_pdf(source_zh_dir, main_tex)
+        if not pre_success:
+            logger.warning("Pre-flight compilation FAILED. The source LaTeX might be broken.")
+            # We proceed anyway, relying on Rescue Protocol later if needed.
+        else:
+            logger.info("Pre-flight compilation SUCCESS. Source is valid.")
         
         translator = GeminiTranslator(api_key=api_key, model_name=model_name)
         
@@ -271,36 +280,7 @@ def main():
         log_ipc(f"PROGRESS:COMPILING:Compiling PDF with Latexmk...")
         success, error_log = compile_pdf(source_zh_dir, main_tex)
         
-        if not success:
-            logger.warning("Initial compilation failed. Attempting AI Recovery...")
-            log_ipc(f"PROGRESS:COMPILING:Initial compilation failed. Attempting AI Recovery...")
-            
-            # AI Recovery Logic
-            try:
-                from .latex_fixer import LatexFixer
-                fixer = LatexFixer(api_key, model_name="gemini-3-flash-preview")
-                
-                # Read broken content
-                with open(main_tex, 'r', encoding='utf-8') as f:
-                    broken_content = f.read()
-                    
-                # Fix
-                fixed_content = fixer.fix_latex(broken_content, error_log)
-                
-                if fixed_content != broken_content:
-                    # Overwrite
-                    with open(main_tex, 'w', encoding='utf-8') as f:
-                        f.write(fixed_content)
-                    
-                    logger.info("Applied AI fix to main.tex. Retrying compilation...")
-                    log_ipc(f"PROGRESS:COMPILING:Retrying compilation with AI fixes...")
-                    
-                    success, error_log = compile_pdf(source_zh_dir, main_tex)
-                else:
-                    logger.warning("AI Fixer returned code without changes. Skipping retry.")
-                    
-            except Exception as fix_e:
-                logger.error(f"AI Recovery failed: {fix_e}", exc_info=True)
+
         
         # Move PDF to root or custom output
         pdf_name = os.path.basename(main_tex).replace(".tex", ".pdf")
@@ -321,8 +301,18 @@ def main():
             logger.info(f"SUCCESS: Generated {final_pdf}")
             log_ipc(f"PROGRESS:COMPLETED:Translation finished successfully.")
         else:
-            logger.error("ERROR: PDF was not generated.")
-            log_ipc(f"PROGRESS:FAILED:PDF compilation failed.")
+            logger.warning("Standard compilation failed. Attempting Rescue Protocol...")
+            from .latex_rescuer import LatexRescuer
+            rescuer = LatexRescuer(source_zh_dir, main_tex)
+            if rescuer.rescue():
+                logger.info("Rescue successful!")
+                log_ipc(f"PROGRESS:COMPILING:Rescue successful! PDF generated (simplified).")
+                shutil.copy(compiled_pdf, final_pdf)
+                logger.info(f"SUCCESS: Generated {final_pdf} (Rescued)")
+                log_ipc(f"PROGRESS:COMPLETED:Translation finished (Rescued).")
+            else:
+                logger.error("ERROR: PDF was not generated even after rescue.")
+                log_ipc(f"PROGRESS:FAILED:PDF compilation failed (Rescue Failed).")
             
     except Exception as e:
         logger.error(f"Translation FAILED: {e}", exc_info=True)

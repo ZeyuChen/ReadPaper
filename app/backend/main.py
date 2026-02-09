@@ -6,7 +6,17 @@ import subprocess
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
+# Load environment variables from .env file
 load_dotenv()
+import sys
+print(f"DEBUG: sys.path: {sys.path}")
+try:
+    import feedparser
+    print(f"DEBUG: feedparser imported successfully: {feedparser}")
+except ImportError as e:
+    print(f"DEBUG: feedparser import failed: {e}")
+    # continue to let it fail later or explore why
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +82,18 @@ else:
 STORAGE_TYPE = os.getenv("STORAGE_TYPE", "local").lower() # 'local' or 'gcs'
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
+# --- Startup Configuration Logging ---
+logger.info("="*50)
+logger.info("READPAPER BACKEND STARTUP")
+logger.info(f"Environment: {'CLOUD RUN' if IS_CLOUD_RUN else 'LOCAL'}")
+logger.info(f"Storage Mode: {STORAGE_TYPE.upper()}")
+if STORAGE_TYPE == 'local':
+    logger.info(f"Storage Path: {PAPER_STORAGE_ROOT}")
+elif STORAGE_TYPE == 'gcs':
+    logger.info(f"GCS Bucket:   {GCS_BUCKET_NAME}")
+logger.info("="*50)
+# -------------------------------------
+
 # Root Storage Service (Factory Base)
 if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME:
     try:
@@ -83,6 +105,8 @@ if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME:
         logger.warning("Falling back to Local Storage.")
         root_storage = LocalStorageService(PAPER_STORAGE_ROOT)
 else:
+    if STORAGE_TYPE == "gcs":
+        logger.warning("STORAGE_TYPE is 'gcs' but GCS_BUCKET_NAME is missing. Falling back to Local.")
     logger.info("Using Local Storage Service.")
     root_storage = LocalStorageService(PAPER_STORAGE_ROOT)
 
@@ -209,7 +233,10 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["ARXIV_TRANSLATOR_LOG_DIR"] = os.path.abspath(os.path.join(BASE_DIR, "logs")) 
+        if IS_CLOUD_RUN:
+            env["ARXIV_TRANSLATOR_LOG_DIR"] = "/tmp/logs"
+        else:
+            env["ARXIV_TRANSLATOR_LOG_DIR"] = os.path.abspath(os.path.join(BASE_DIR, "logs")) 
         project_root = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
         env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
         

@@ -59,20 +59,31 @@ class GeminiTranslator:
             content: The text to split.
             chunk_size: Approximate number of lines per chunk.
         """
+        # Chunking Strategy 2.0: Paragraph-aware splitting
         lines = content.split('\n')
         chunks = []
         current_chunk = []
+        current_size = 0
         
         for line in lines:
             current_chunk.append(line)
-            if len(current_chunk) >= chunk_size:
+            current_size += 1
+            
+            # Check for split condition:
+            # 1. Size exceeds threshold
+            # 2. current line is empty (paragraph break) OR strict threshold reached (force split to avoid OOM)
+            is_empty = (line.strip() == "")
+            
+            if (current_size >= chunk_size and is_empty) or (current_size >= chunk_size * 2):
                 chunks.append('\n'.join(current_chunk))
                 current_chunk = []
+                current_size = 0
+                
         if current_chunk:
             chunks.append('\n'.join(current_chunk))
             
         translated_chunks = []
-        logger.info(f"Split content into {len(chunks)} chunks for translation.")
+        logger.info(f"Split content into {len(chunks)} chunks for translation (Paragraph-aware).")
         
         for i, chunk in enumerate(chunks):
             logger.info(f"Translating chunk {i+1}/{len(chunks)}...")
@@ -96,20 +107,18 @@ class GeminiTranslator:
                     cleaned = self._clean_output(full_text)
                     translated_chunks.append(cleaned)
                 else:
-                    # Fallback: Use original chunk but still clean comments
+                    # Fallback
                     logger.warning(f"Chunk {i+1} returned empty response. Using fallback.")
                     cleaned_fallback = self._clean_output(chunk)
                     translated_chunks.append(cleaned_fallback)
                     
             except Exception as e:
                 logger.error(f"Chunk {i+1} failed: {e}")
-                # Fallback: Use original chunk but still clean comments
                 cleaned_fallback = self._clean_output(chunk)
                 translated_chunks.append(cleaned_fallback)
             
-            # Rate limiting for Pro model to avoid overloading quotas
             if "pro" in self.model_name.lower():
-                time.sleep(2)  # 2 seconds delay between chunks
+                time.sleep(2)
                 
         return '\n'.join(translated_chunks)
 

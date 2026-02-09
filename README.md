@@ -19,11 +19,41 @@ The project is designed for cloud-native deployment on **Google Cloud Run**, uti
 ## 🚀 Key Features
 
 - **LaTeX-Native Translation**: Translates source code directly to preserve complex equations, tables, and citations.
-- **DeepDive Analysis (New)**: Performs an initial AI pass to generate English-language insights for complex technical concepts, which are then translated and embedded into the final PDF.
-- **AI-Powered Recovery (New)**: Automatically detects PDF compilation failures and uses Gemini 3.0 Flash to "fix" broken LaTeX code, ensuring a robust output even with malformed inputs.
-- **Split-View Interface**: Modern Next.js frontend for side-by-side reading of original and translated versions.
-- **Cloud Scale**: Built on Google Cloud Run for serverless scalability.
-- **Robust Compilation**: Dockerized TeX Live environment ensures consistent PDF generation.
+- **DeepDive Analysis**: AI-driven technical analysis that injects concept explanations directly into the PDF.
+- **Robust Pipeline 2.0**:
+    -   **Smart Chunking**: Paragraph-aware text segmentation prevents broken LaTeX environments.
+    -   **Force Compilation**: Uses `latexmk -f` to recover from non-critical errors.
+    -   **Rescue Mode**: Automatically falls back to a simplified, safe template if standard compilation fails, ensuring you always get a readable PDF.
+- **Split-View Interface**: Modern Next.js frontend for side-by-side reading.
+- **Cloud Scale**: Built on Google Cloud Run with GCS artifact storage.
+- **Local Ready**: One-click local deployment via `run_conda_local.sh`.
+
+## ⚙️ Dual-Mode Configuration
+
+ReadPaper is designed to run seamlessly in two modes. A template is provided in `.env.example`.
+
+### Mode 1: Local Development (Default)
+
+Best for development and personal use. No Google Cloud setup required.
+
+1.  **Copy Config**: `cp .env.example .env`
+2.  **Required Variables**:
+    *   `GEMINI_API_KEY`: Your AI Studio key.
+    *   `STORAGE_TYPE=local`: Files are saved to `./paper_storage`.
+    *   `NEXT_PUBLIC_DISABLE_AUTH=true`: Skips Google Login (mocks "Local Developer").
+
+### Mode 2: Cloud Deployment (Google Cloud)
+
+Best for production, scaling, and team use.
+
+1.  **Infrastructure**:
+    *   **Cloud Run**: Hosts the Backend (Python) and Frontend (Next.js).
+    *   **Cloud Storage (GCS)**: Persists PDFs and assets (replacing local disk).
+2.  **Required Variables** (set in Cloud Run or `cloudbuild.yaml`):
+    *   `STORAGE_TYPE=gcs`
+    *   `GCS_BUCKET_NAME`: Name of your GCS bucket.
+    *   `NEXT_PUBLIC_DISABLE_AUTH=false`: Enforces real Google Auth.
+    *   `AUTH_GOOGLE_ID` & `AUTH_GOOGLE_SECRET`: OAuth credentials from GCP Console.
 
 ## 🏗️ Architecture
 
