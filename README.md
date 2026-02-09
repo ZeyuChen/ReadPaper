@@ -29,12 +29,12 @@ The project is designed for cloud-native deployment on **Google Cloud Run**, uti
 
 ```mermaid
 graph TD
-    User[User] -->|Upload/Url| FE[Frontend (Next.js)]
-    FE -->|API Request| BE[Backend (FastAPI)]
+    User[User] -->|Upload/Url| FE[Frontend Next.js]
+    FE -->|API Request| BE[Backend FastAPI]
     
     subgraph Google Cloud Platform
         BE -->|Download Src| ArXiv[arXiv.org]
-        BE -->|Analysis & Translation| Gemini[Gemini 1.5/3.0 API]
+        BE -->|Analysis & Translation| Gemini[Gemini API]
         BE -->|Store Artifacts| GCS[Google Cloud Storage]
         BE -->|Compile PDF| Tex[TeX Live Engine]
     end
