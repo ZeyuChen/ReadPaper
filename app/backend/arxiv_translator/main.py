@@ -169,7 +169,7 @@ def main():
         # print(f"Main TeX file: {main_tex}", flush=True)
 
         # 2.6 Pre-flight Compilation Check (Establish Baseline)
-        log_ipc(f"PROGRESS:COMPILING:Running pre-flight compilation check...")
+        log_ipc(f"PROGRESS:PRE_FLIGHT:Running pre-flight compilation check...")
         pre_success, _ = compile_pdf(source_zh_dir, main_tex)
         if not pre_success:
             logger.warning("Pre-flight compilation FAILED. The source LaTeX might be broken.")

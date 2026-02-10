@@ -350,20 +350,26 @@ function AuthenticatedPdfViewer({ url, title }: { url: string, title: string }) 
     const [blobUrl, setBlobUrl] = useState<string | null>(null);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
+    const isLocalDev = process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true';
 
     useEffect(() => {
         const fetchPdf = async () => {
             // @ts-ignore
-            if (!session?.idToken) return;
+            if (!session?.idToken && !isLocalDev) return;
             try {
                 setLoading(true);
                 setError('');
-                const res = await fetch(url, {
-                    headers: {
-                        // @ts-ignore
-                        'Authorization': `Bearer ${session.idToken}`
-                    }
-                });
+                
+                const headers: Record<string, string> = {};
+                // @ts-ignore
+                if (session?.idToken) {
+                    // @ts-ignore
+                    headers['Authorization'] = `Bearer ${session.idToken}`;
+                } else if (isLocalDev) {
+                    headers['Authorization'] = `Bearer DEV-TOKEN-local-dev-user`;
+                }
+
+                const res = await fetch(url, { headers });
                 if (!res.ok) {
                     if (res.status === 404) throw new Error("PDF not found yet");
                     throw new Error(`Failed to load PDF: ${res.statusText}`);

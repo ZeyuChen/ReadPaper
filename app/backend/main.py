@@ -248,7 +248,23 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             env=env
         )
         
-                # Stream logs
+        # Fix for deadlock: Consume stderr concurrently to prevent buffer filling
+        stderr_logs = []
+        async def consume_stderr():
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                try:
+                    decoded = line.decode('utf-8').strip()
+                    if decoded:
+                        stderr_logs.append(decoded)
+                except:
+                    pass
+        
+        stderr_task = asyncio.create_task(consume_stderr())
+
+        # Stream logs
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
@@ -262,6 +278,7 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                     # Map codes to status
                     status_map = {
                         "TRANSLATING": (10, "Translating..."),
+                        "PRE_FLIGHT": (10, "Pre-flight Check..."),
                         "COMPILING": (90, "Compiling PDF..."),
                         "COMPLETED": (100, "Done"),
                         "FAILED": (0, "Failed"),
@@ -341,10 +358,10 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                          update_status(task_key, "processing", rest)
 
         return_code = await process.wait()
+        await stderr_task
         
         if return_code != 0:
-            stderr = await process.stderr.read()
-            err_msg = stderr.decode('utf-8')
+            err_msg = "\n".join(stderr_logs[-20:]) # Keep last 20 lines
             update_status(task_key, "failed", f"Process failed: {err_msg[:200]}")
             return
 
@@ -435,6 +452,12 @@ async def translate_paper(
         return {"message": "Already completed", "arxiv_id": arxiv_id, "status": "completed"}
     
     task_key = f"{user_id}:{arxiv_id}"
+    
+    # Check if a task is already running
+    current_status = TASK_STATUS.get(task_key, {}).get("status")
+    if current_status in ["queued", "processing"]:
+         return {"message": "Translation in progress", "arxiv_id": arxiv_id, "status": current_status}
+
     update_status(task_key, "queued", "Started")
     
     background_tasks.add_task(
