@@ -19,7 +19,11 @@ const nextConfig: NextConfig = {
     return [
       {
         source: '/backend/:path*',
-        destination: `${process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/:path*`,
+        // Route to our internal API route handler which reads API_URL at runtime.
+        // next.config.ts rewrites() are evaluated at BUILD time, so env vars like
+        // API_URL are not available here. The /api/backend/* route reads them at
+        // REQUEST time instead.
+        destination: '/api/backend/:path*',
       },
     ];
   },

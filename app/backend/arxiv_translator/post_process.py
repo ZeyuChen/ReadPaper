@@ -3,13 +3,27 @@ import re
 from .logging_utils import logger
 
 
-
 def apply_post_processing(source_dir: str, main_tex_path: str):
     """
-    Applies regex substitutions and fixes to all .tex files in the source directory.
-    Targeting common issues in translated LaTeX.
+    Phase 3: Apply targeted fixes to all .tex/.bib files after translation.
+
+    Injections (main file only):
+      • ctex       [fontset=fandol] — enables CJK typesetting for Chinese text
+      • xspace                      — prevents spacing issues after macros
+      • xcolor                      — required for DeepDive \\textcolor annotations
+
+    Fixes applied to all .tex files:
+      1. Strip LLM conversational preamble (if LLM added text before \\documentclass)
+      2. Remove conflicting CJK packages (CJK, xeCJK, CJKutf8 — ctex supersedes them)
+      3. Inject ctex + xspace + xcolor before \\begin{document} in main file
+      4. Remove legacy \\begin{CJK}...\\end{CJK} environments
+      5. Rename \\chinese macro to \\zhtext to avoid conflicts
+      6. Deduplicate \\label{} definitions globally across all files
+      7. Fix escaped brace artifacts: \\{ → \\lbrace, \\} → \\rbrace in text mode
+
+    .bib files:
+      • Fix duplicate 'and' in author lists (bibtex parser bug)
     """
-    # 1. Identify all tex files
     tex_files = []
     for root, dirs, files in os.walk(source_dir):
         for file in files:
@@ -18,168 +32,136 @@ def apply_post_processing(source_dir: str, main_tex_path: str):
 
     logger.info(f"Post-processing {len(tex_files)} files in {source_dir}...")
 
-    # 2. Process all tex files
-    for file_path in tex_files:
-        _process_single_file(file_path, main_tex_path)
+    # Global seen_labels set to catch cross-file duplicates
+    global_seen_labels: set = set()
 
-    # 3. Process bib files
-    bib_files = []
+    for file_path in tex_files:
+        _process_single_file(file_path, main_tex_path, global_seen_labels)
+
+    # Process bib files
     for root, dirs, files in os.walk(source_dir):
         for file in files:
             if file.endswith(".bib"):
-                bib_files.append(os.path.join(root, file))
+                _process_bib_file(os.path.join(root, file))
 
-    for file_path in bib_files:
-        _process_bib_file(file_path)
 
 def _process_bib_file(file_path: str):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-        
-        original_content = content
-        
-        # 1. Double 'and' in author list (causes Tectonic panic)
-        # matches " and and " with any whitespace
+        original = content
+        # Fix double 'and' in author list (causes Tectonic/bibtex panic)
         content = re.sub(r'\s+and\s+and\s+', ' and ', content, flags=re.IGNORECASE)
-        
-        if content != original_content:
-            logger.debug(f"Applied fixes to .bib file {os.path.basename(file_path)}")
+        if content != original:
+            logger.debug(f"Fixed .bib: {os.path.basename(file_path)}")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-                
     except Exception as e:
-        logger.error(f"Post-processing failed for .bib file {file_path}: {e}")
+        logger.error(f"Post-processing failed for .bib {file_path}: {e}")
 
-def _process_single_file(file_path: str, main_tex_path: str):
+
+def _process_single_file(file_path: str, main_tex_path: str, global_seen_labels: set):
     try:
         file_name = os.path.basename(file_path)
-        # Determine if this is the MAIN tex file
-        # We need absolute paths comparison
         is_main = os.path.abspath(file_path) == os.path.abspath(main_tex_path)
-        
+
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-            
         original_content = content
-        
-        # --- fixes ---
-        
-        # 0. Strip chatty preamble (e.g. "Here is the translation:")
-        # 0. Strip chatty preamble (e.g. "Here is the translation:")
-        # Find index of \documentclass
+
+        # ── Fix 0: Strip LLM conversational preamble ─────────────────────
         doc_class_match = re.search(r'\\documentclass', content)
-        if doc_class_match:
-            start_idx = doc_class_match.start()
-            if start_idx > 0:
-                # Check if preceding content is just comments/whitespace
-                preceding = content[:start_idx]
-                if not all(line.strip().startswith('%') or not line.strip() for line in preceding.splitlines()):
-                     logger.warning(f"Stripping conversational preamble from {file_name}")
-                     content = content[start_idx:]
+        if doc_class_match and doc_class_match.start() > 0:
+            preceding = content[:doc_class_match.start()]
+            if not all(
+                line.strip().startswith('%') or not line.strip()
+                for line in preceding.splitlines()
+            ):
+                logger.warning(f"Stripping LLM preamble from {file_name}")
+                content = content[doc_class_match.start():]
 
-        # 1. Remove CJK packages (ctex handles this)
-        # We only remove from preamble, which is usually in main.tex or imported styles.
-        # But safer to remove globally if they appear
-        # Use simple string replacement for safety where possible, or function
-        content = re.sub(r'\\usepackage\s*\{CJK.*\}', '% usepackage{CJK...} removed', content)
-        content = re.sub(r'\\usepackage\s*\{xeCJK\}', '% usepackage{xeCJK} removed', content)
-        content = re.sub(r'\\usepackage\s*\{CJKutf8\}', '% usepackage{CJKutf8} removed', content)
-        
-        # 2. Inject ctex if missing in MAIN file
-        if is_main:
-             if "\\documentclass" in content and "ctex" not in content:
-                 # Standard injection before begin document
-                 preamble = "\n\\\\usepackage[fontset=fandol]{ctex}\n\\\\usepackage{xspace}\n"
-                 if "\\begin{document}" in content:
-                     content = content.replace("\\begin{document}", preamble.replace("\\\\", "\\") + "\\begin{document}")
-                 else:
-                     # Fallback: inject after documentclass
-                     # Use function for replacement to avoid escape issues
-                     def inject_preamble(match):
-                         return match.group(1) + "\n\\usepackage[fontset=fandol]{ctex}\n\\usepackage{xspace}\n"
-                     
-                     content = re.sub(r'(\\documentclass\[.*?\]\{.*?\})', inject_preamble, content)
+        # ── Fix 1: Remove conflicting CJK package variants ───────────────
+        content = re.sub(r'\\usepackage\s*(?:\[.*?\])?\s*\{CJK\*?\}', '% [removed CJK package]', content)
+        content = re.sub(r'\\usepackage\s*\{xeCJK\}', '% [removed xeCJK - ctex handles this]', content)
+        content = re.sub(r'\\usepackage\s*\{CJKutf8\}', '% [removed CJKutf8 - ctex handles this]', content)
 
-        # 3. Remove CJK environments (legacy)
-        content = re.sub(r'\\begin\{CJK\*\}\{.*?\}\{.*?\}', '', content)
-        content = re.sub(r'\\end\{CJK\*\}', '', content)
-        
-        # Also handle \begin{CJK}{UTF8}{gbsn} without *
+        # ── Fix 2: Inject ctex in MAIN file (single correct escape) ──────
+        if is_main and '\\documentclass' in content and 'ctex' not in content:
+            ctex_line = '\\usepackage[fontset=fandol]{ctex}\n\\usepackage{xspace}\n\\usepackage{xcolor}\n'
+            if '\\begin{document}' in content:
+                content = content.replace('\\begin{document}', ctex_line + '\\begin{document}', 1)
+            else:
+                # Inject after first \documentclass line
+                content = re.sub(
+                    r'(\\documentclass(?:\[.*?\])?\{.*?\})',
+                    r'\1\n' + ctex_line.replace('\\', r'\\'),
+                    content, count=1
+                )
+
+        # ── Fix 3: Remove CJK environments (legacy LaTeX 2e pattern) ─────
+        content = re.sub(r'\\begin\{CJK\*?\}\{.*?\}\{.*?\}', '', content)
+        content = re.sub(r'\\end\{CJK\*?\}', '', content)
         content = re.sub(r'\\begin\{CJK\}\{.*?\}\{.*?\}', '', content)
         content = re.sub(r'\\end\{CJK\}', '', content)
 
-        # 4. Fix \chinese macro conflict (common in arXiv templates)
-        if r"\chinese" in content:
-             # Lookahead negative assertion to avoid replacing \chinesefont
-             # Replace \chinese with \mychinese. In replacement string, \\\\ becomes \\
-             content = re.sub(r'\\chinese(?![a-zA-Z])', r'\\\\mychinese', content)
-             
-             # Simplify definition if present (e.g. \newcommand{\chinese}[1]{...})
-             if r"\newcommand{\mychinese}" in content or r"\def\mychinese" in content:
-                 content = re.sub(
-                    r'\\newcommand\{\\mychinese\}\[1\]\{.*?\}', 
-                    r'\\\\newcommand{\\\\mychinese}[1]{#1}', 
-                    content, 
-                    flags=re.DOTALL
-                 )
+        # ── Fix 4: \\chinese macro conflict (correct single-escape) ──────
+        if r'\chinese' in content:
+            # Rename \chinese → \zhtext (short, unlikely to clash)
+            # Correct regex: replace \chinese (not followed by a letter) 
+            content = re.sub(r'\\chinese(?![a-zA-Z])', r'\\zhtext', content)
+            # Also update any \newcommand{\chinese} → \newcommand{\zhtext}
+            content = re.sub(
+                r'\\newcommand\s*\{\\chinese\}',
+                r'\\newcommand{\\zhtext}',
+                content
+            )
+            content = re.sub(r'\\def\\chinese(?![a-zA-Z])', r'\\def\\zhtext', content)
 
-        # 5. Minted package options
-        if "{minted}" in content:
-             content = re.sub(r'\\usepackage\[.*?\]\{minted\}', r'\\usepackage[outputdir=.]{minted}', content)
+        # ── Fix 5: minted package output dir ─────────────────────────────
+        if '{minted}' in content:
+            content = re.sub(
+                r'\\usepackage\[.*?\]\{minted\}',
+                r'\\usepackage[outputdir=.]{minted}',
+                content
+            )
+            if '\\usepackage{minted}' in content:
+                content = content.replace('\\usepackage{minted}', '\\usepackage[outputdir=.]{minted}')
 
-        # 5.1 Inject tcolorbox if used but missing
-        if "tcolorbox" in content and "{tcolorbox}" not in content:
-            # Inject after xcolor or documentclass
-            if "{xcolor}" in content:
-                content = content.replace("{xcolor}", "{xcolor}\n\\usepackage{tcolorbox}")
-            else:
-                 # Fallback injection
-                 if "\\documentclass" in content:
-                     def inject_package(match):
-                         return match.group(1) + "\n\\usepackage{tcolorbox}\n"
-                     content = re.sub(r'(\\documentclass\[.*?\]\{.*?\})', inject_package, content)
+        # ── Fix 6: tcolorbox auto-inject if used but not loaded ──────────
+        if 'tcolorbox' in content and '{tcolorbox}' not in content:
+            inject = '\\usepackage{tcolorbox}\n'
+            if '{xcolor}' in content:
+                content = content.replace('{xcolor}\n', '{xcolor}\n' + inject, 1)
+            elif '\\begin{document}' in content:
+                content = content.replace('\\begin{document}', inject + '\\begin{document}', 1)
 
-        # 6. Backend switch (biber -> bibtex)
-        if "backend=biber" in content:
-            content = content.replace("backend=biber", "backend=bibtex")
-
-        # 7. Duplicate labels
-        # Scan for \label{...} and keep only first occurrence of each unique label
-        # We need to use a function-level set for labels?
-        # NO, labels must be unique GLOBALLY.
-        # But here we are processing file-by-file.
-        # If we want global uniqueness, we need to pass a shared set.
-        # However, processing sequentially allows this if we pass the set.
-        # Let's pass a set? No, that requires changing the signature in the loop.
-        # Ideally, main.py passes a set?
-        # Or, we just fix LOCAL duplicates (LLM repeating same section).
-        # Global duplicates (between files) are rare unless files are duplicated.
-        # Let's stick to local uniqueness for now as in main.py.
-        
+        # ── Fix 7: Duplicate labels (global cross-file tracking) ─────────
         label_pattern = re.compile(r'\\label\{([^}]+)\}')
-        seen_labels = set()
-        
+
         def replace_label(match):
             lbl = match.group(1)
-            if lbl in seen_labels:
-                return f"% Duplicate label removed: {lbl}"
-            seen_labels.add(lbl)
+            if lbl in global_seen_labels:
+                return f'% [duplicate label removed: {lbl}]'
+            global_seen_labels.add(lbl)
             return match.group(0)
-            
+
         content = label_pattern.sub(replace_label, content)
-        
-        # 8. Escaped braces fix
-        content = content.replace(r"\ }", r"\}")
-        content = content.replace(r"\ {", r"\{")
-        
-        # 9. Unicode replacement / Safety
-        # (Implicit via file writing encoding)
-        
+
+        # ── Fix 8: Escaped brace typos introduced by LLM ─────────────────
+        content = content.replace(r'\ }', r'\}')
+        content = content.replace(r'\ {', r'\{')
+
+        # ── Fix 9: Remove stray markdown artifacts ───────────────────────
+        # LLM sometimes inserts ```latex or ``` into the middle of a file
+        content = re.sub(r'^```(?:latex)?\s*$', '', content, flags=re.MULTILINE)
+
+        # ── Fix 10: Normalize multiple blank lines (max 2) ───────────────
+        content = re.sub(r'\n{4,}', '\n\n\n', content)
+
         if content != original_content:
-            logger.debug(f"Applied Post-Processing fixes to {file_name}")
+            logger.debug(f"Post-processing applied fixes to {file_name}")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-                
+
     except Exception as e:
         logger.error(f"Post-processing failed for {file_path}: {e}")

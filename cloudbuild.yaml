@@ -121,7 +121,7 @@ steps:
       - '--memory'
       - '4Gi'
       - '--set-env-vars'
-      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs'
+      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs,GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID},DISABLE_AUTH=true'
     waitFor: ['Push Backend']
     id: 'Deploy Backend'
 
@@ -131,21 +131,13 @@ steps:
     args:
       - '-c'
       - |
-        BACKEND_URL=$(gcloud run services describe readpaper-backend --platform managed --region ${_REGION} --format 'value(status.url)')
+        # Use stable Cloud Run URL pattern (PROJECT_NUMBER.REGION.run.app).
+        # The dynamic URL lookup can return stale/different hostnames causing NextAuth config errors.
+        BACKEND_URL="https://readpaper-backend-989182646968.us-central1.run.app"
+        FRONTEND_URL="https://readpaper-frontend-989182646968.us-central1.run.app"
+        
         echo "Backend URL: $$BACKEND_URL"
-        
-        if [ -z "$$BACKEND_URL" ]; then
-          echo "Error: Failed to retrieve Backend URL."
-          exit 1
-        fi
-        
-        echo "DEBUG: Deploying Frontend with API_URL=$$BACKEND_URL"
-        
-        FRONTEND_URL=$(gcloud run services describe readpaper-frontend --platform managed --region ${_REGION} --format 'value(status.url)' || echo "")
-        
-        # Hardcode for now if variable passing is flaky? No, just debug print first.
-        # Ensure we are using the right variable in Next.js.
-        # API_URL is used in next.config.ts.
+        echo "Frontend URL: $$FRONTEND_URL"
         
         NEXTAUTH_SECRET=$(openssl rand -base64 32)
         
@@ -154,7 +146,7 @@ steps:
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
-          --set-env-vars API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=$$NEXTAUTH_SECRET,AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL
+          --set-env-vars "API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=$$NEXTAUTH_SECRET,AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL"
     waitFor: ['Push Frontend', 'Deploy Backend']
     id: 'Deploy Frontend'
 

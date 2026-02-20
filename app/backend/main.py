@@ -18,7 +18,7 @@ except ImportError as e:
     # continue to let it fail later or explore why
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, TypedDict, Optional, List
@@ -260,12 +260,19 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                 if len(parts) >= 3:
                     code, rest = parts[1], parts[2]
                     # Map codes to status
+                    # Map codes to status
                     status_map = {
-                        "TRANSLATING": (10, "Translating..."),
-                        "COMPILING": (90, "Compiling PDF..."),
+                        "DOWNLOADING": (5, "Downloading source..."),
+                        "EXTRACTING": (8, "Extracting files..."),
+                        "PRE_FLIGHT": (10, "Pre-flight compilation check..."),
+                        "TRANSLATING": (15, "Translating..."),
+                        "ANALYZING": (15, "Analyzing DeepDive..."),
+                        "POST_PROCESSING": (85, "Cleaning up LaTeX..."),
+                        "COMPILING": (90, "Compiling final PDF..."),
                         "COMPLETED": (100, "Done"),
-                        "FAILED": (0, "Failed"),
-                        "ANALYZING": (10, "Analyzing DeepDive...")
+                        "COMPLETED_WITH_WARNINGS": (100, "Done (with warnings)"),
+                        "WARN": (85, "Warning"),
+                        "FAILED": (0, "Failed")
                     }
                     
                     # Fetch current progress to ensure monotonicity
@@ -276,7 +283,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                     if code == "TRANSLATING" and ":" in rest:
                          try:
                              # Format: count:total:filename
-                             # Use robust splitting
                              p_parts = rest.split(":", 2)
                              if len(p_parts) >= 3:
                                  c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
@@ -285,10 +291,9 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                                  
                                  pct = current_pct
                                  if total > 0:
-                                     # Map 10% -> 90%
-                                     # Formula: 10 + (count / total) * 80
-                                     # When count=0, pct=10.
-                                     pct = 10 + int((count / total) * 80)
+                                     # Range: 15% -> 85%
+                                     # Formula: 15 + (count / total) * 70
+                                     pct = 15 + int((count / total) * 70)
                                  
                                  # Ensure monotonicity
                                  if pct < current_pct:
@@ -298,7 +303,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                              else:
                                  update_status(task_key, "processing", f"Translating: {rest}")
                          except Exception as e:
-                             # Fallback don't reset progress
                              update_status(task_key, "processing", f"Translating: {rest.split(':')[-1]}")
 
                     # Handle advanced ANALYZING:X:Y:File
@@ -313,8 +317,8 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                                  
                                  pct = current_pct
                                  if total > 0:
-                                     # Map 10% -> 40% (DeepDive phase)
-                                     pct = 10 + int((count / total) * 30)
+                                     # Range: 15% -> 30% (DeepDive phase)
+                                     pct = 15 + int((count / total) * 15)
                                  
                                  # Ensure monotonicity
                                  if pct < current_pct:
@@ -329,11 +333,19 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                     elif code in status_map:
                          prog, msg = status_map[code]
                          if code == "COMPLETED":
-                             update_status(task_key, "completed", rest, 100)
+                             # Do not mark as fully completed yet. Wait for upload to finish.
+                             update_status(task_key, "processing", "Finalizing upload...", 99)
+                         elif code == "COMPLETED_WITH_WARNINGS":
+                             # Mark as fully completed but include warning details
+                             update_status(task_key, "processing", "Finalizing upload...", 99, rest)
+                         elif code == "WARN":
+                             # Non-fatal warning: keep processing state, store as detail
+                             update_status(task_key, "processing", rest, current_pct, rest)
                          elif code == "FAILED":
                              update_status(task_key, "failed", rest, 0)
                          else:
-                             # Generic status update (don't regress progress usually, unless starting phase)
+                             # Generic status update
+                             # Only update progress if the new generic step is > current
                              if prog < current_pct and prog > 0:
                                  prog = current_pct
                              update_status(task_key, "processing", rest, prog, msg)
@@ -352,22 +364,30 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         # Expected outputs in work_root (CWD) or workspace directory
         workspace_dir = os.path.join(work_root, f"workspace_{arxiv_id}")
         
-        # Find any PDF ending in _zh*.pdf in work_root (primary) or workspace_dir (fallback)
+        # Recursively search entire work_root tree for any translated PDF
+        # (handles nested workspace dirs and rescue mode output paths)
         found_pdf_path = None
-        
-        # Check work_root first
-        for f in os.listdir(work_root):
-             if f.endswith(".pdf") and "_zh" in f:
-                 found_pdf_path = os.path.join(work_root, f)
-                 break
-        
-        # Fallback to workspace dir
-        if not found_pdf_path and os.path.exists(workspace_dir):
-             for f in os.listdir(workspace_dir):
-                 if f.endswith(".pdf") and "_zh" in f:
-                     found_pdf_path = os.path.join(workspace_dir, f)
-                     break
-        
+        for dirpath, _, filenames in os.walk(work_root):
+            for f in filenames:
+                if f.endswith(".pdf") and ("_zh" in f or "translated" in f.lower()):
+                    found_pdf_path = os.path.join(dirpath, f)
+                    logger.info(f"Found translated PDF: {found_pdf_path}")
+                    break
+            if found_pdf_path:
+                break
+
+        # Last resort: find ANY pdf that isn't the original (might be rescue output)
+        if not found_pdf_path:
+            original_pdf = f"{arxiv_id}.pdf"
+            for dirpath, _, filenames in os.walk(work_root):
+                for f in filenames:
+                    if f.endswith(".pdf") and f != original_pdf:
+                        found_pdf_path = os.path.join(dirpath, f)
+                        logger.info(f"Found fallback PDF (rescue): {found_pdf_path}")
+                        break
+                if found_pdf_path:
+                    break
+
         if found_pdf_path:
              pdf_filename = os.path.basename(found_pdf_path)
              await storage_service.upload_file(found_pdf_path, f"{arxiv_id}/{pdf_filename}")
@@ -381,7 +401,7 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                  meta.get("authors", []), 
                  meta.get("categories", [])
              )
-             update_status(task_key, "completed", "Processing complete.")
+             update_status(task_key, "completed", "Processing complete.", 100)
         else:
              update_status(task_key, "failed", "PDF not found after processing.")
 
@@ -417,7 +437,46 @@ async def delete_paper(
     await storage_service.delete_folder(arxiv_id)
     return {"message": "Deleted"}
 
+@app.get("/search")
+async def search_papers(q: str, max_results: int = 8):
+    """
+    Search arXiv papers by keyword/title query.
+    Returns a list of matching papers with metadata.
+    """
+    try:
+        import urllib.parse
+        query = urllib.parse.quote(q)
+        url = f"http://export.arxiv.org/api/query?search_query=all:{query}&max_results={max_results}&sortBy=relevance"
+        feed = feedparser.parse(url)
+        results = []
+        for entry in feed.entries:
+            arxiv_id = entry.id.split("/abs/")[-1]
+            results.append({
+                "arxiv_id": arxiv_id,
+                "title": entry.title.replace("\n", " ").strip(),
+                "abstract": entry.summary.replace("\n", " ").strip()[:300] + "...",
+                "authors": [a.name for a in getattr(entry, "authors", [])],
+                "categories": [t.term for t in getattr(entry, "tags", [])],
+                "published": getattr(entry, "published", ""),
+                "url": f"https://arxiv.org/abs/{arxiv_id}",
+            })
+        return results
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+@app.get("/metadata/{arxiv_id}")
+async def get_metadata(arxiv_id: str):
+    """Fetch paper metadata from arXiv by ID — used for preview before translation."""
+    meta = fetch_arxiv_metadata(arxiv_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Paper not found on arXiv")
+    meta["arxiv_id"] = arxiv_id
+    meta["url"] = f"https://arxiv.org/abs/{arxiv_id}"
+    return meta
+
 @app.post("/translate")
+
 async def translate_paper(
     request: TranslationRequest, 
     background_tasks: BackgroundTasks,
@@ -464,44 +523,78 @@ async def get_paper(
 ):
     """
     Serves the PDF file (original or translated) for a specific paper.
-    
-    Current Implementation:
-    - For LocalStorage: Serves the file directly from the filesystem using FileResponse.
-    - For GCS: Generates a signed URL and redirects the client to it.
-    
-    Args:
-        arxiv_id: The ID of the paper.
-        file_type: "original" or "translated".
+    Returns 404 (not 500) when a file is missing.
     """
-    # Proxy file download from User Storage
-    # List files to find match
     files = storage_service.list_files(f"{arxiv_id}/")
     target = None
     
     if file_type == "original":
-        target = f"{arxiv_id}/{arxiv_id}.pdf"
+        # Exact name: {arxiv_id}.pdf
+        expected = f"{arxiv_id}/{arxiv_id}.pdf"
+        if any(f == expected or f.endswith(f"/{arxiv_id}.pdf") for f in files):
+            target = expected
+        elif files:
+            # Fallback: any PDF that matches the arxiv_id exactly
+            for f in files:
+                if os.path.basename(f) == f"{arxiv_id}.pdf":
+                    target = f"{arxiv_id}/{os.path.basename(f)}"
+                    break
+
     elif file_type == "translated":
-        # Find *zh*.pdf
+        # Match any translated PDF: prefers _zh suffix, accepts any non-original PDF
+        original_name = f"{arxiv_id}.pdf"
+        best = None
+        fallback = None
         for f in files:
-            if "_zh" in f and f.endswith(".pdf"):
-                target = f"{arxiv_id}/{os.path.basename(f)}" 
-                break
+            basename = os.path.basename(f)
+            if not basename.endswith(".pdf"):
+                continue
+            if basename == original_name:
+                continue  # Skip the original
+            if "_zh" in basename:
+                best = f"{arxiv_id}/{basename}"
+                break  # Take first _zh match
+            elif fallback is None:
+                fallback = f"{arxiv_id}/{basename}"
+        target = best or fallback
     
     if not target:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=f"{file_type} PDF not found for {arxiv_id}")
 
     if isinstance(storage_service, LocalStorageService):
         full_path = storage_service._get_full_path(target)
-        return FileResponse(full_path)
+        if not os.path.exists(full_path):
+            logger.warning(f"PDF missing from local storage: {full_path}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"PDF file no longer available (server may have restarted)"
+            )
+        return FileResponse(full_path, media_type="application/pdf")
+
     elif isinstance(storage_service, GCSStorageService):
-        # Generate Signed URL for direct access (more efficient than proxying)
-        blob = storage_service.bucket.blob(storage_service._get_gcs_path(target))
-        # Note: This requires the service account to have Token Creator permissions
-        if blob.exists():
-            url = blob.generate_signed_url(version="v4", expiration=3600, method="GET")
-            return RedirectResponse(url)
+        gcs_path = storage_service._get_gcs_path(target)
+        blob = storage_service.bucket.blob(gcs_path)
+        try:
+            exists = await asyncio.to_thread(blob.exists)
+            if not exists:
+                raise HTTPException(status_code=404, detail="PDF not found in cloud storage")
+            # Stream the blob content directly — avoids needing a private key for signed URLs.
+            # Cloud Run's service account has Storage Object Viewer access, so this works.
+            filename = os.path.basename(target)
+            blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
+            return StreamingResponse(
+                iter([blob_bytes]),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"GCS blob download failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Could not read file from cloud storage: {str(e)}")
             
     raise HTTPException(status_code=404, detail="File could not be served")
+
 
 @app.get("/tasks")
 async def get_tasks(user_id: str = Depends(get_current_user)):
