@@ -1,6 +1,6 @@
 # ReadPaper Architecture & Robustness Pipeline
 
-This document details the technical architecture of ReadPaper, focusing on the sophisticated translation and compilation pipeline designed to handle complex arXiv LaTeX sources.
+This document details the technical architecture of ReadPaper, focusing on the sophisticated translation and compilation pipeline. **All AI calls in this project use Gemini 3.0 Flash (`gemini-3-flash-preview`)** — not Gemini 2.0 or 2.5.
 
 ## System Overview
 
@@ -17,7 +17,7 @@ graph TD
     A[Start: arXiv URL] --> B[Download Source & Extract]
     B --> C[DeepDive Analysis]
     C --> D[Smart Chunking]
-    D --> E[Gemini Translation]
+    D --> E[Gemini 3.0 Flash Translation]
     E --> F[Compile PDF]
     
     subgraph "Robustness Layer"
@@ -41,8 +41,19 @@ Standard line-based chunking often breaks LaTeX environments (e.g., splitting a 
 -   **Old Logic**: Split every N lines.
 -   **New Logic**: Splits only on paragraph boundaries (empty lines) or when a hard token limit is reached, preserving the structural integrity of LaTeX blocks.
 
-### 3. Gemini Translation
-We strictly enforce **Gemini 3.0 Flash Preview** for all operations to balance speed and context window size. The system uses a strict system prompt to forbid the translation of LaTeX commands, math environments, and citations.
+### 3. Gemini 3.0 Flash Translation
+
+All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`) exclusively:
+
+| Operation | Model | Purpose |
+|---|---|---|
+| Text-node translation | `gemini-3-flash-preview` | Translate prose-only text batches to Chinese |
+| DeepDive analysis | `gemini-3-flash-preview` | Generate explanation boxes after dense paragraphs |
+| Compile error fixing | `gemini-3-flash-preview` | Parse LaTeX error logs and apply targeted fixes |
+
+> **Why Gemini 3.0 Flash?** The large context window handles full-document batches without chunking overhead, while the Flash tier provides the speed needed for sub-5-minute end-to-end translation of typical papers.
+
+The system uses a strict `text_only_translation_prompt.txt` system prompt instructing the model to output **only** the Chinese translation — no LaTeX commands, no markdown, no preamble.
 
 ### 4. Robust Compilation
 We use `latexmk` with a specifically tuned configuration:

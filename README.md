@@ -3,16 +3,21 @@
 <div align="center">
   <img src="logo.svg" width="120" alt="ReadPaper Logo" />
   <h1>ReadPaper: Bilingual AI ArXiv Reader</h1>
+  <p><strong>Powered by Gemini 3.0 Flash</strong></p>
 </div>
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Next.js](https://img.shields.io/badge/next.js-14+-black.svg)
 ![GCP](https://img.shields.io/badge/Google_Cloud-Ready-4285F4.svg)
+![Model](https://img.shields.io/badge/Gemini-3.0_Flash-blue?logo=google)
 
 **ReadPaper** is an open-source tool that revolutionizes how you read academic papers. It automates the translation of technical arXiv papers from English to Chinese while **preserving the original LaTeX layout**, citations, equations, and bibliography references.
 
-It leverages **Gemini 2.0 Flash** for high-fidelity translation and the optional **AI DeepDive** feature to inject expert insights directly into the document, creating a truly bilingual reading experience.
+It leverages **[Gemini 3.0 Flash](https://deepmind.google/technologies/gemini/flash/)** (`gemini-3-flash-preview`) for high-fidelity, high-speed translation and the optional **AI DeepDive** feature to inject expert insights directly into the document, creating a truly bilingual reading experience.
+
+> [!IMPORTANT]
+> This project uses the **Gemini 3.0 Flash API** (`gemini-3-flash-preview`) exclusively — not Gemini 2.0 or 2.5. All translation, DeepDive analysis, and error-fix loops route through the same model.
 
 The project is designed for cloud-native deployment on **Google Cloud Run**, utilizing **Cloud Storage (GCS)** for scalable artifact management.
 
@@ -131,6 +136,7 @@ Uses only `xcolor` (always injected) — no `tcolorbox` dependency to avoid pack
 - **TeX Live** (with `latexmk`, `xelatex`, `fandol` fonts) — or Docker (used as fallback)
 - **Google Cloud SDK** (for GCP deployment)
 - **Gemini API Key** from [Google AI Studio](https://aistudio.google.com/)
+  - Model used: **`gemini-3-flash-preview`** (Gemini 3.0 Flash) — set `GEMINI_API_KEY` in `.env`
 
 ## 🛠️ Usage
 
