@@ -85,9 +85,13 @@ def _process_single_file(file_path: str, main_tex_path: str, global_seen_labels:
         content = re.sub(r'\\usepackage\s*\{xeCJK\}', '% [removed xeCJK - ctex handles this]', content)
         content = re.sub(r'\\usepackage\s*\{CJKutf8\}', '% [removed CJKutf8 - ctex handles this]', content)
 
-        # ── Fix 2: Inject ctex in MAIN file (single correct escape) ──────
+        # ── Fix 2: Inject ctex in MAIN file (pdfLaTeX UTF8 mode) ─────────
         if is_main and '\\documentclass' in content and 'ctex' not in content:
-            ctex_line = '\\usepackage[fontset=fandol]{ctex}\n\\usepackage{xspace}\n\\usepackage{xcolor}\n'
+            # [UTF8]{ctex} — pdfLaTeX compatible:
+            #  ‣ Uses Type 1 fandol fonts embedded directly in PDF (no fontconfig needed)
+            #  ‣ Handles UTF-8 CJK input automatically
+            #  ‣ Supersedes CJKutf8/inputenc — both already removed in Fix 1 above
+            ctex_line = '\\usepackage[UTF8]{ctex}\n\\usepackage{xspace}\n\\usepackage{xcolor}\n'
             if '\\begin{document}' in content:
                 content = content.replace('\\begin{document}', ctex_line + '\\begin{document}', 1)
             else:
@@ -97,6 +101,13 @@ def _process_single_file(file_path: str, main_tex_path: str, global_seen_labels:
                     r'\1\n' + ctex_line.replace('\\', r'\\'),
                     content, count=1
                 )
+
+        # Remove conflicting inputenc when ctex is present.
+        # ctex[UTF8] subsumes inputenc — duplicate causes 'Option clash' error.
+        if 'ctex' in content:
+            content = re.sub(r'\\usepackage\s*\[utf8\]\s*\{inputenc\}', '% [removed inputenc — ctex handles UTF-8]', content)
+            content = re.sub(r'\\usepackage\s*\[UTF8\]\s*\{inputenc\}', '% [removed inputenc — ctex handles UTF-8]', content)
+
 
         # ── Fix 3: Remove CJK environments (legacy LaTeX 2e pattern) ─────
         content = re.sub(r'\\begin\{CJK\*?\}\{.*?\}\{.*?\}', '', content)

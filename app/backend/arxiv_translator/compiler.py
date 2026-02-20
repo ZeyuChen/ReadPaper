@@ -191,7 +191,7 @@ def compile_pdf(
 
         if latexmk_path:
             cmd = [
-                latexmk_path, "-xelatex", "-bibtex",
+                latexmk_path, "-pdf", "-bibtex",
                 "-interaction=nonstopmode", "-f",
                 "-file-line-error", "-outdir=.",
                 rel_tex_file
@@ -207,7 +207,7 @@ def compile_pdf(
                 "-w", "/workdir",
                 "--user", f"{uid}:{gid}",
                 "ghcr.io/xu-cheng/texlive-full:latest",
-                "latexmk", "-xelatex", "-bibtex",
+                "latexmk", "-pdf", "-bibtex",
                 "-interaction=nonstopmode", "-f",
                 "-file-line-error", "-outdir=.",
                 rel_tex_file
