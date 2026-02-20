@@ -136,21 +136,20 @@ steps:
       - '-c'
       - |
         # Use stable Cloud Run URL pattern (PROJECT_NUMBER.REGION.run.app).
-        # The dynamic URL lookup can return stale/different hostnames causing NextAuth config errors.
         BACKEND_URL="https://readpaper-backend-989182646968.us-central1.run.app"
         FRONTEND_URL="https://readpaper-frontend-989182646968.us-central1.run.app"
         
         echo "Backend URL: $$BACKEND_URL"
         echo "Frontend URL: $$FRONTEND_URL"
         
-        NEXTAUTH_SECRET=$(openssl rand -base64 32)
-        
+        # IMPORTANT: Use a stable NEXTAUTH_SECRET so sessions survive across deploys.
+        # If this is randomized per deploy, all user sessions are invalidated on every push.
         gcloud run deploy readpaper-frontend \
           --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-frontend:$BUILD_ID \
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
-          --set-env-vars "API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=$$NEXTAUTH_SECRET,AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL"
+          --set-env-vars "API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=${_NEXTAUTH_SECRET},AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL"
     waitFor: ['Push Frontend', 'Deploy Backend']
     id: 'Deploy Frontend'
 
@@ -159,6 +158,9 @@ substitutions:
   _BUCKET_NAME: 'readpaper-storage-gen-lang-client-0098594892'
   _GOOGLE_CLIENT_ID: 'MUST_BE_PROVIDED'
   _GOOGLE_CLIENT_SECRET: 'MUST_BE_PROVIDED'
+  # IMPORTANT: Use a FIXED stable value here. Do NOT randomize per deploy.
+  # Changing this secret invalidates all existing user sessions.
+  _NEXTAUTH_SECRET: 'MUST_BE_PROVIDED'
 
 images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:$BUILD_ID'

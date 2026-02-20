@@ -261,6 +261,18 @@ export default function ClientHome({ config }: ClientHomeProps) {
             const pollInterval = setInterval(async () => {
                 try {
                     const statusRes = await fetch(`${config.apiUrl}/status/${targetId}`, { headers: getAuthHeaders() });
+
+                    // Detect session expiry — the most common cause of stuck progress
+                    if (statusRes.status === 401) {
+                        clearInterval(pollInterval);
+                        stopTimer();
+                        setLoading(false);
+                        setStatusMessage('');
+                        setProgress(0);
+                        setError('Session expired. Please sign out and sign back in, then try again.');
+                        return;
+                    }
+
                     const statusData = await statusRes.json();
 
                     if (statusData.message) {
