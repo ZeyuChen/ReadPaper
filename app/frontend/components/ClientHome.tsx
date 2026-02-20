@@ -39,6 +39,8 @@ export default function ClientHome({ config }: ClientHomeProps) {
     // displayProgress is smoothly animated toward `progress` via rAF — never snaps.
     const [displayProgress, setDisplayProgress] = useState(0);
     const displayProgressRef = useRef(0);
+    // ID of the paper whose delete button is in the "confirm" state
+    const [deletingId, setDeletingId] = useState<string | null>(null);
     const [library, setLibrary] = useState<any[]>([]);
     const [useDeepDive, setUseDeepDive] = useState(false);
 
@@ -287,13 +289,15 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
     const deletePaper = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
-        if (!confirm('Delete this paper?')) return;
         try {
             const res = await fetch(`${config.apiUrl}/library/${id}`, {
                 method: 'DELETE',
                 headers: getAuthHeaders()
             });
-            if (res.ok) setLibrary((prev: any[]) => prev.filter((p: any) => p.id !== id));
+            if (res.ok) {
+                setLibrary((prev: any[]) => prev.filter((p: any) => p.id !== id));
+                setDeletingId(null);
+            }
         } catch (e) { console.error("Delete failed", e); }
     };
 
@@ -585,15 +589,29 @@ export default function ClientHome({ config }: ClientHomeProps) {
                                             ))}
                                         </div>
                                     </div>
-                                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                                    <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
                                         <ChevronRight size={16} className="text-gray-300 group-hover:text-blue-400 transition-colors mt-1" />
-                                        <button
-                                            onClick={(e) => deletePaper(e, paper.id)}
-                                            className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500 p-1"
-                                            title="Delete"
-                                        >
-                                            <Trash2 size={14} />
-                                        </button>
+                                        {deletingId === paper.id ? (
+                                            /* Two-step inline confirm — replaces window.confirm() */
+                                            <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                                                <button
+                                                    onClick={e => { e.stopPropagation(); setDeletingId(null); }}
+                                                    className="text-xs text-gray-500 hover:text-gray-700 px-2 py-0.5 rounded-full border border-gray-200 hover:border-gray-300 transition-colors"
+                                                >Cancel</button>
+                                                <button
+                                                    onClick={e => deletePaper(e, paper.id)}
+                                                    className="text-xs text-white bg-red-500 hover:bg-red-600 px-2 py-0.5 rounded-full transition-colors font-medium"
+                                                >Delete</button>
+                                            </div>
+                                        ) : (
+                                            <button
+                                                onClick={e => { e.stopPropagation(); setDeletingId(paper.id); }}
+                                                className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500 p-1"
+                                                title="Delete"
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
                             ))}
