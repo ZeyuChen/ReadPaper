@@ -86,7 +86,7 @@ def translate_file_worker(api_key: str, model_name: str, file_path: str) -> tupl
         return False, file_path, 0
 
 
-def deepdive_analysis_worker(api_key: str, file_path: str, model_name: str = "gemini-2.0-flash") -> tuple[bool, str]:
+def deepdive_analysis_worker(api_key: str, file_path: str, model_name: str = "gemini-3-flash-preview") -> tuple[bool, str]:
     try:
         analyzer = DeepDiveAnalyzer(api_key, model_name=model_name)
         file_name = os.path.basename(file_path)
@@ -114,7 +114,7 @@ def main():
     group.add_argument("arxiv_url", nargs="?", help="arXiv URL or ID")
     group.add_argument("--set-key", help="Save Gemini API key to config and exit")
 
-    parser.add_argument("--model", default="gemini-2.0-flash", help="Gemini model to use")
+    parser.add_argument("--model", default="gemini-3-flash-preview", help="Gemini model to use")
     parser.add_argument("--output", "-o", help="Custom output path for translated PDF")
     parser.add_argument("--keep", action="store_true", help="Keep intermediate files")
     parser.add_argument("--deepdive", action="store_true", help="Enable AI DeepDive analysis")
