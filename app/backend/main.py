@@ -150,13 +150,31 @@ def update_status(task_key: str, status: str, message: str = "", progress: int =
     # Preserve progress if not provided and status is processing
     if progress == 0 and status == "processing" and "progress_percent" in current:
         progress = current["progress_percent"]
-        
+
     TASK_STATUS[task_key] = {
-        "status": status, 
+        "status": status,
         "message": message,
         "progress_percent": progress,
-        "details": details
+        "details": details,
+        # Preserve per-file status across status updates
+        "files": current.get("files", {}),
+        "compile_log": current.get("compile_log", ""),
     }
+
+
+def update_file_status(task_key: str, filename: str, file_status: str,
+                       batches_done: int = None, batches_total: int = None):
+    """Update the status of a single .tex file within the TASK_STATUS files dict."""
+    current = TASK_STATUS.get(task_key, {})
+    files = dict(current.get("files", {}))
+    entry = dict(files.get(filename, {"status": "pending", "batches_done": 0, "batches_total": 0}))
+    entry["status"] = file_status
+    if batches_done is not None:
+        entry["batches_done"] = batches_done
+    if batches_total is not None:
+        entry["batches_total"] = batches_total
+    files[filename] = entry
+    TASK_STATUS[task_key] = {**current, "files": files}
 
 async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool, user_id: str, storage_service: StorageService, library_manager: LibraryManager):
     """
@@ -277,16 +295,34 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                     current_status = TASK_STATUS.get(task_key, {})
                     current_pct = current_status.get("progress_percent", 0)
 
-                    # ── Fine-grained batch progress (emitted by translator.py per batch) ──
-                    # Format: PROGRESS:BATCH_PROGRESS:done:total:filename
-                    # Accumulated across ALL files: track a global running counter.
-                    if code == "BATCH_PROGRESS":
+                    # ── Per-file FILE_LIST: initialise files dict ──────────────
+                    if code == "FILE_LIST":
+                        # rest = "main.tex|intro.tex|method.tex"
+                        names = [n.strip() for n in rest.split("|") if n.strip()]
+                        files = {n: {"status": "pending", "batches_done": 0, "batches_total": 0} for n in names}
+                        current_state = TASK_STATUS.get(task_key, {})
+                        TASK_STATUS[task_key] = {**current_state, "files": files}
+
+                    # ── Per-file FILE_DONE: mark individual file complete ──────
+                    elif code == "FILE_DONE":
+                        # rest = "main.tex:ok" or "main.tex:fail"
+                        fd_parts = rest.split(":", 1)
+                        if len(fd_parts) == 2:
+                            fname, outcome = fd_parts
+                            update_file_status(
+                                task_key, fname.strip(),
+                                "done" if outcome.strip() == "ok" else "failed"
+                            )
+
+                    # ── Fine-grained batch progress ────────────────────────────
+                    elif code == "BATCH_PROGRESS":
                         try:
                             bp_parts = rest.split(":", 2)
                             if len(bp_parts) >= 3:
                                 b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
-                                # Map within translation range 15–85%
-                                # Use current_pct as floor to ensure monotonicity.
+                                # Set file status -> translating and update batch counts
+                                update_file_status(task_key, fname, "translating", b_done, b_total)
+                                # Map within translation range 15-85%
                                 if b_total > 0:
                                     new_pct = 15 + int((b_done / b_total) * 70)
                                     pct = max(new_pct, current_pct)
@@ -349,6 +385,9 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                          elif code == "WARN":
                              update_status(task_key, "processing", rest, current_pct, rest)
                          elif code == "FAILED":
+                             # Store the compile error log for frontend display
+                             current_state = TASK_STATUS.get(task_key, {})
+                             TASK_STATUS[task_key] = {**current_state, "compile_log": rest}
                              update_status(task_key, "failed", rest, 0)
                          else:
                              if prog < current_pct and prog > 0:
@@ -396,7 +435,26 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         if found_pdf_path:
              pdf_filename = os.path.basename(found_pdf_path)
              await storage_service.upload_file(found_pdf_path, f"{arxiv_id}/{pdf_filename}")
-             
+
+             # ── Upload .tex source files for long-term preview ───────────────
+             # Walk source/ (original) and source_zh/ (translated) and upload
+             # every .tex file to GCS at {arxiv_id}/tex/original/ and
+             # {arxiv_id}/tex/translated/ so the frontend can preview them
+             # via the /paper/{arxiv_id}/texfile endpoint.
+             workspace_dir_tex = os.path.join(work_root, f"workspace_{arxiv_id}")
+             for tex_variant, subdir in (("original", "source"), ("translated", "source_zh")):
+                 tex_dir = os.path.join(workspace_dir_tex, subdir)
+                 if os.path.isdir(tex_dir):
+                     for root_d, _, files in os.walk(tex_dir):
+                         for fname in files:
+                             if fname.endswith(".tex"):
+                                 local_tex = os.path.join(root_d, fname)
+                                 gcs_key = f"{arxiv_id}/tex/{tex_variant}/{fname}"
+                                 try:
+                                     await storage_service.upload_file(local_tex, gcs_key)
+                                 except Exception as tex_e:
+                                     logger.warning(f"tex upload failed: {gcs_key}: {tex_e}")
+
              # Update Library
              meta = fetch_arxiv_metadata(arxiv_id)
              await library_manager.add_paper(
@@ -519,6 +577,39 @@ async def get_status(
     if not status:
         return {"status": "not_found"}
     return status
+
+@app.get("/paper/{arxiv_id}/texfile")
+async def get_tex_file(
+    arxiv_id: str,
+    name: str,
+    type: str = "translated",
+    storage_service: StorageService = Depends(get_storage_service),
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Serve a .tex source file (original or translated) for preview in the frontend.
+
+    Query params:
+        name: filename (e.g. 'main.tex')
+        type: 'original' or 'translated' (default: translated)
+
+    Files are stored at {arxiv_id}/tex/{type}/{name} in user storage.
+    """
+    if type not in ("original", "translated"):
+        raise HTTPException(status_code=400, detail="type must be 'original' or 'translated'")
+
+    gcs_key = f"{arxiv_id}/tex/{type}/{name}"
+    try:
+        content_bytes = await storage_service.get_file(gcs_key)
+        if content_bytes is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {gcs_key}")
+        content = content_bytes.decode("utf-8", errors="replace")
+        return {"filename": name, "type": type, "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"tex file fetch failed ({gcs_key}): {e}")
+        raise HTTPException(status_code=404, detail=f"File not available: {name}")
 
 @app.get("/paper/{arxiv_id}/{file_type}")
 async def get_paper(

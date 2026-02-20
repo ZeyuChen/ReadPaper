@@ -19,7 +19,7 @@ from .text_extractor import LatexTextExtractor
 from .translator import GeminiTranslator
 from .downloader import download_source
 from .extractor import extract_source
-from .compiler import compile_with_fix_loop, compile_pdf
+from .compiler import compile_pdf
 from .config import ConfigManager
 from .deepdive import DeepDiveAnalyzer
 from .logging_utils import logger, log_ipc
@@ -231,6 +231,11 @@ def main():
 
         # ── Phase 1+2: Parallel Text-Node Translation ─────────────────────
         total_files = len(translatable)
+
+        # Emit the full file list so the backend can initialise the per-file
+        # status table before any workers start. Pipe-separated basenames.
+        file_list_names = "|".join(os.path.basename(f) for f in translatable)
+        log_ipc(f"PROGRESS:FILE_LIST:{file_list_names}")
         log_ipc(f"PROGRESS:TRANSLATING:0:{total_files}:Starting text-node translation ({model_name})...")
 
         completed_count = 0
@@ -247,13 +252,16 @@ def main():
                 try:
                     success, _, failed_nodes = future.result()
                     total_failed_nodes += failed_nodes
+                    outcome = "ok" if success else "fail"
                     if success:
                         log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Translated {file_name}")
                     else:
                         log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Failed {file_name}")
+                    log_ipc(f"PROGRESS:FILE_DONE:{file_name}:{outcome}")
                 except Exception as exc:
                     logger.error(f"Worker exception for {file_name}: {exc}", exc_info=True)
                     log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Error {file_name}")
+                    log_ipc(f"PROGRESS:FILE_DONE:{file_name}:fail")
 
         # Surface translation failures to the user via IPC
         if total_failed_nodes > 0:
@@ -267,18 +275,15 @@ def main():
         log_ipc(f"PROGRESS:POST_PROCESSING:Applying robustness fixes...")
         apply_post_processing(source_zh_dir, main_tex)
 
-        # ── Phase 4: Compile + Error-Driven Fix Loop ──────────────────────
-        log_ipc(f"PROGRESS:COMPILING:Compiling PDF (with AI fix loop)...")
+        # ── Phase 4: Single-Shot Compile ───────────────────────────────────
+        log_ipc(f"PROGRESS:COMPILING:Compiling PDF (pdfLaTeX)...")
 
         suffix = "_zh_deepdive" if args.deepdive else "_zh"
         final_pdf = args.output or f"{arxiv_id}{suffix}.pdf"
 
-        success, log = compile_with_fix_loop(
+        success, compile_error = compile_pdf(
             source_zh_dir,
             main_tex,
-            api_key=api_key,
-            model_name=model_name,
-            max_attempts=3,
             timeout=200,
         )
 
@@ -297,8 +302,10 @@ def main():
             else:
                 log_ipc(f"PROGRESS:COMPLETED:Translation finished successfully.")
         else:
-            logger.error("PDF generation failed after all attempts.")
-            log_ipc(f"PROGRESS:FAILED:PDF compilation failed after all attempts.")
+            logger.error("PDF generation failed.")
+            # Emit the LaTeX error log so the frontend can display it.
+            error_msg = compile_error[:1500] if compile_error else "PDF compilation failed."
+            log_ipc(f"PROGRESS:FAILED:{error_msg}")
 
     except Exception as e:
         logger.error(f"Translation FAILED: {e}", exc_info=True)

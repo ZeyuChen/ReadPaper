@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
-import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield } from 'lucide-react';
+import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft } from 'lucide-react';
 
 interface ClientHomeProps {
     config: {
@@ -29,6 +29,12 @@ interface ProgressEntry {
     pct: number;
 }
 
+interface FileStatus {
+    status: 'pending' | 'translating' | 'done' | 'failed';
+    batches_done: number;
+    batches_total: number;
+}
+
 export default function ClientHome({ config }: ClientHomeProps) {
     const [url, setUrl] = useState('');
     const [arxivId, setArxivId] = useState<string | null>(null);
@@ -44,9 +50,20 @@ export default function ClientHome({ config }: ClientHomeProps) {
     const [library, setLibrary] = useState<any[]>([]);
     const [useDeepDive, setUseDeepDive] = useState(false);
 
+    // Per-file translation status (populated from status.files)
+    const [translationFiles, setTranslationFiles] = useState<Record<string, FileStatus>>({});
+    // Compile error log (populated from status.compile_log on failure)
+    const [compileLog, setCompileLog] = useState('');
+
+    // LaTeX preview sidebar
+    const [previewFile, setPreviewFile] = useState<string | null>(null);
+    const [previewType, setPreviewType] = useState<'original' | 'translated'>('translated');
+    const [previewContent, setPreviewContent] = useState<string>('');
+    const [previewLoading, setPreviewLoading] = useState(false);
+
     // Paper preview / metadata
     const [previewMeta, setPreviewMeta] = useState<PaperMeta | null>(null);
-    const [previewLoading, setPreviewLoading] = useState(false);
+    const [metaPreviewLoading, setMetaPreviewLoading] = useState(false);
 
     // Search suggestions
     const [searchResults, setSearchResults] = useState<PaperMeta[]>([]);
@@ -232,6 +249,13 @@ export default function ClientHome({ config }: ClientHomeProps) {
                     if (typeof statusData.progress_percent === 'number') {
                         setProgress(statusData.progress_percent);
                     }
+                    // Merge per-file status from backend into translationFiles state
+                    if (statusData.files && typeof statusData.files === 'object') {
+                        setTranslationFiles(statusData.files);
+                    }
+                    if (statusData.compile_log) {
+                        setCompileLog(statusData.compile_log);
+                    }
 
                     if (statusData.status === 'completed') {
                         clearInterval(pollInterval);
@@ -241,6 +265,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
                             setLoading(false);
                             setStatusMessage('');
                             setProgress(0);
+                            setTranslationFiles({});
                         }, 800);
                     } else if (statusData.status === 'failed') {
                         clearInterval(pollInterval);
@@ -257,6 +282,32 @@ export default function ClientHome({ config }: ClientHomeProps) {
             setError(err.message || 'An error occurred');
             setLoading(false);
             setStatusMessage('');
+        }
+    };
+
+    const openTexPreview = async (filename: string, type: 'original' | 'translated') => {
+        if (!url) return;
+        const targetId = url.match(/(\d{4}\.\d{4,5})/)?.[1];
+        if (!targetId) return;
+        setPreviewFile(filename);
+        setPreviewType(type);
+        setPreviewContent('');
+        setPreviewLoading(true);
+        try {
+            const res = await fetch(
+                `${config.apiUrl}/paper/${targetId}/texfile?name=${encodeURIComponent(filename)}&type=${type}`,
+                { headers: getAuthHeaders() }
+            );
+            if (res.ok) {
+                const data = await res.json();
+                setPreviewContent(data.content || '');
+            } else {
+                setPreviewContent('(File not yet available — translation may still be in progress)');
+            }
+        } catch {
+            setPreviewContent('(Failed to load file content)');
+        } finally {
+            setPreviewLoading(false);
         }
     };
 
@@ -496,48 +547,142 @@ export default function ClientHome({ config }: ClientHomeProps) {
                 {/* Progress Panel */}
                 {loading && (
                     <div className="bg-white border border-gray-200 rounded-2xl p-5 text-left shadow-sm space-y-3">
-                        {/* Progress Bar — uses animated displayProgress, not raw server value */}
+                        {/* Slim overall progress bar */}
                         <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium text-gray-700 truncate flex-1 flex items-center gap-1.5">
                                 {statusMessage || 'Initializing...'}
-                                {/* Pulsing dot shows the process is alive */}
                                 <span className="inline-flex gap-0.5" aria-hidden>
                                     {[0, 150, 300].map(delay => (
-                                        <span
-                                            key={delay}
-                                            className="w-1 h-1 rounded-full bg-blue-400 animate-bounce"
-                                            style={{ animationDelay: `${delay}ms` }}
-                                        />
+                                        <span key={delay} className="w-1 h-1 rounded-full bg-blue-400 animate-bounce"
+                                            style={{ animationDelay: `${delay}ms` }} />
                                     ))}
                                 </span>
                             </span>
                             <span className="text-sm font-semibold text-blue-600 ml-3 tabular-nums">{progress}%</span>
                         </div>
-                        <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                            <div
-                                className="h-2 bg-gradient-to-r from-blue-500 to-blue-400 rounded-full"
-                                style={{
-                                    width: `${Math.max(displayProgress, 3)}%`,
-                                    // CSS transition only as safety net — primary animation is rAF above.
-                                    transition: 'width 0.1s linear',
-                                }}
-                            />
+                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                            <div className="h-1.5 bg-gradient-to-r from-blue-500 to-blue-400 rounded-full"
+                                style={{ width: `${Math.max(displayProgress, 3)}%`, transition: 'width 0.1s linear' }} />
                         </div>
 
-                        {/* Live Log */}
-                        {progressLog.length > 0 && (
-                            <div className="max-h-36 overflow-y-auto space-y-1 pt-2 border-t border-gray-100">
-                                {[...progressLog].reverse().map((entry, i) => (
-                                    <div key={i} className={`flex items-start gap-2 text-xs ${i === 0 ? 'text-blue-700 font-medium' : 'text-gray-500'}`}>
-                                        <span className="font-mono opacity-60 flex-shrink-0">{entry.time}</span>
-                                        <span className="truncate">{entry.message}</span>
-                                        {entry.pct > 0 && <span className="ml-auto flex-shrink-0 tabular-nums opacity-60">{entry.pct}%</span>}
-                                    </div>
-                                ))}
+                        {/* Per-file status table */}
+                        {Object.keys(translationFiles).length > 0 && (
+                            <div className="border border-gray-100 rounded-xl overflow-hidden mt-2">
+                                <div className="bg-gray-50 px-3 py-1.5 border-b border-gray-100 flex items-center justify-between">
+                                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Translation Files</span>
+                                    <span className="text-xs text-gray-400">
+                                        {Object.values(translationFiles).filter(f => f.status === 'done').length}/{Object.keys(translationFiles).length} done
+                                    </span>
+                                </div>
+                                <div className="divide-y divide-gray-50 max-h-56 overflow-y-auto">
+                                    {Object.entries(translationFiles).map(([name, fs]) => {
+                                        const isDone = fs.status === 'done';
+                                        const isTranslating = fs.status === 'translating';
+                                        const isFailed = fs.status === 'failed';
+                                        const isPending = fs.status === 'pending';
+                                        return (
+                                            <div key={name} className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors group">
+                                                {/* Status icon */}
+                                                <div className="flex-shrink-0 w-4">
+                                                    {isDone && <CheckCircle2 size={15} className="text-green-500" />}
+                                                    {isTranslating && <Loader size={15} className="text-blue-500 animate-spin" />}
+                                                    {isPending && <Circle size={15} className="text-gray-300" />}
+                                                    {isFailed && <XCircle size={15} className="text-red-400" />}
+                                                </div>
+                                                {/* Filename */}
+                                                <span className={`text-xs font-mono flex-1 truncate ${isDone ? 'text-gray-700' : isTranslating ? 'text-blue-700 font-medium' : isFailed ? 'text-red-500' : 'text-gray-400'}`}>
+                                                    {name}
+                                                </span>
+                                                {/* Mini batch bar for files in progress */}
+                                                {isTranslating && fs.batches_total > 0 && (
+                                                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                        <div className="w-16 h-1 bg-gray-100 rounded-full overflow-hidden">
+                                                            <div className="h-full bg-blue-400 rounded-full transition-all duration-300"
+                                                                style={{ width: `${Math.min(100, (fs.batches_done / fs.batches_total) * 100)}%` }} />
+                                                        </div>
+                                                        <span className="text-[10px] text-gray-400 tabular-nums">{fs.batches_done}/{fs.batches_total}</span>
+                                                    </div>
+                                                )}
+                                                {isDone && (
+                                                    <span className="text-[10px] text-green-500 flex-shrink-0">✓</span>
+                                                )}
+                                                {/* Preview button — visible on hover */}
+                                                <button
+                                                    onClick={() => openTexPreview(name, 'translated')}
+                                                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-500 flex-shrink-0 transition-opacity p-0.5"
+                                                    title="Preview translated LaTeX"
+                                                >
+                                                    <FileText size={12} />
+                                                </button>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
                         )}
 
                         <p className="text-xs text-gray-400 text-center">Translation typically takes 2–8 minutes depending on paper length</p>
+                    </div>
+                )}
+
+                {/* Compile error panel */}
+                {!loading && compileLog && error && (
+                    <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-left">
+                        <p className="text-xs font-semibold text-red-700 mb-2 flex items-center gap-1.5">⚠️ LaTeX Compilation Error</p>
+                        <pre className="text-[11px] font-mono text-red-800 bg-red-100/60 rounded-lg p-3 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
+                            {compileLog}
+                        </pre>
+                    </div>
+                )}
+
+                {/* LaTeX Preview Sidebar — slides in from the right */}
+                {previewFile && (
+                    <div className="fixed inset-0 z-50 flex justify-end" onClick={() => setPreviewFile(null)}>
+                        {/* Dark backdrop */}
+                        <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+                        {/* Drawer */}
+                        <div
+                            className="relative bg-white shadow-2xl w-full max-w-xl flex flex-col h-full"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            {/* Header */}
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50 flex-shrink-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <FileText size={14} className="text-gray-500 flex-shrink-0" />
+                                    <span className="text-sm font-mono text-gray-700 truncate">{previewFile}</span>
+                                </div>
+                                <button onClick={() => setPreviewFile(null)} className="text-gray-400 hover:text-gray-700 ml-2 flex-shrink-0">
+                                    <X size={16} />
+                                </button>
+                            </div>
+                            {/* Tabs */}
+                            <div className="flex border-b border-gray-100 px-4 flex-shrink-0">
+                                {(['translated', 'original'] as const).map(t => (
+                                    <button
+                                        key={t}
+                                        onClick={() => openTexPreview(previewFile, t)}
+                                        className={`text-xs px-4 py-2 border-b-2 transition-colors capitalize ${previewType === t
+                                            ? 'border-blue-500 text-blue-600 font-medium'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                                    >
+                                        {t === 'translated' ? '✦ Translated' : 'Original'}
+                                    </button>
+                                ))}
+                            </div>
+                            {/* Content */}
+                            <div className="flex-1 overflow-auto p-4 bg-gray-50">
+                                {previewLoading ? (
+                                    <div className="flex items-center justify-center h-full text-gray-400 gap-2">
+                                        <Loader2 size={16} className="animate-spin" />
+                                        <span className="text-sm">Loading...</span>
+                                    </div>
+                                ) : (
+                                    <pre className="text-[11px] font-mono text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
+                                        {previewContent || '(No content available)'}
+                                    </pre>
+                                )}
+                            </div>
+                        </div>
                     </div>
                 )}
 
