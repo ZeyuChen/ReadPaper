@@ -48,9 +48,12 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Secur
              
         id_info = id_token.verify_oauth2_token(token, requests.Request(), google_client_id)
         
-        # Google User ID
-        user_id = id_info['sub']
-        return user_id
+        # Return the verified email (not sub/UID) so caller code can compare
+        # against human-readable email strings like SUPER_ADMIN_EMAIL.
+        email = id_info.get('email')
+        if not email:
+            raise HTTPException(status_code=401, detail="Token did not contain an email claim")
+        return email
         
     except ValueError as e:
         logger.error(f"Token verification (ValueError) failed: {e}")
