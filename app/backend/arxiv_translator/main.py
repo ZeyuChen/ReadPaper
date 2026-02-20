@@ -203,7 +203,12 @@ def main():
             logger.info("Pre-flight SUCCESS.")
 
         # ── Phase 3 (Optional): DeepDive Analysis ────────────────────────
-        max_workers = int(os.getenv("MAX_CONCURRENT_REQUESTS", 8))
+        # MAX_CONCURRENT_REQUESTS: number of .tex files translated in parallel (ProcessPoolExecutor).
+        # MAX_BATCH_CONCURRENCY (in translator.py): within each file, number of
+        #   concurrent Gemini API calls fired simultaneously via asyncio.gather.
+        # Default: 16 file workers × 8 concurrent batches each = up to 128 in-flight requests.
+        # Tune down if you hit 429 rate-limit errors.
+        max_workers = int(os.getenv("MAX_CONCURRENT_REQUESTS", "16"))
 
         if args.deepdive:
             log_ipc(f"PROGRESS:ANALYZING:Starting AI DeepDive ({max_workers} workers)...")
