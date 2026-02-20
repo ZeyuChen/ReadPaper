@@ -55,7 +55,6 @@ class SynchronousFuture:
 @patch("app.backend.arxiv_translator.main.extract_source")
 @patch("app.backend.arxiv_translator.main.GeminiTranslator")
 @patch("app.backend.arxiv_translator.main.DeepDiveAnalyzer")
-@patch("app.backend.arxiv_translator.main.compile_with_fix_loop")
 @patch("app.backend.arxiv_translator.main.compile_pdf")
 @patch("app.backend.arxiv_translator.main.clean_latex_directory")
 @patch("app.backend.arxiv_translator.main.PaperAnalyzer")
@@ -63,11 +62,18 @@ class SynchronousFuture:
 @patch("concurrent.futures.as_completed")
 def test_e2e_pipeline_mocked(
     mock_as_completed, mock_executor, mock_analyzer_cls,
-    mock_clean, mock_compile_pdf, mock_compile_loop,
+    mock_clean, mock_compile_pdf,
     mock_deepdive, mock_translator,
     mock_extract, mock_download, mock_workspace
 ):
-    """Verifies the main entry point logic without external calls."""
+    """Verifies the main entry point logic without external calls.
+    
+    NOTE: compile_with_fix_loop has been removed. compile_pdf is now the sole
+    compilation function. It serves both the pre-flight check and the final
+    compilation, so mock_compile_pdf is configured to:
+      - First call (pre-flight): return (True, "")
+      - Second call (final compile): create the dummy PDF and return (True, "")
+    """
 
     # ── Executor: run synchronously ──────────────────────────────────────────
     mock_executor.side_effect = SynchronousExecutor
@@ -95,18 +101,23 @@ def test_e2e_pipeline_mocked(
     analyzer_instance = mock_analyzer_cls.return_value
     analyzer_instance.analyze.return_value = mock_structure
 
-    # ── Pre-flight compile (compile_pdf): succeed silently ───────────────────
-    mock_compile_pdf.return_value = (True, "")
+    # ── compile_pdf: pre-flight (1st call) succeeds; final compile (2nd call)
+    #    creates the dummy PDF and succeeds. ──────────────────────────────────
+    call_count = [0]
 
-    # ── Main compile loop: create dummy PDF ──────────────────────────────────
-    def side_effect_compile_loop(source_dir, main_tex, **kwargs):
+    def side_effect_compile_pdf(source_dir, main_tex, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # Pre-flight compile — just return success
+            return (True, "")
+        # Final compile — create the PDF output so main() can find & copy it
         pdf_path = os.path.join(source_dir, os.path.basename(main_tex).replace(".tex", ".pdf"))
         os.makedirs(source_dir, exist_ok=True)
         with open(pdf_path, "w") as f:
             f.write("%PDF-1.4 dummy")
         return (True, "")
 
-    mock_compile_loop.side_effect = side_effect_compile_loop
+    mock_compile_pdf.side_effect = side_effect_compile_pdf
 
     # ── Translator ───────────────────────────────────────────────────────────
     translator_instance = mock_translator.return_value
@@ -138,7 +149,5 @@ def test_e2e_pipeline_mocked(
     # ── Assertions ───────────────────────────────────────────────────────────
     mock_download.assert_called_once()
     mock_clean.assert_called_once()
-    mock_compile_loop.assert_called()
-    # Translator is called via worker function inside ProcessPoolExecutor —
-    # since we mock the executor synchronously, translate_text_nodes gets called
-    assert mock_compile_pdf.called, "Pre-flight compile_pdf should be called"
+    # compile_pdf is now called twice: once for pre-flight, once for final compile
+    assert mock_compile_pdf.call_count >= 2, "compile_pdf should be called for pre-flight + final"
