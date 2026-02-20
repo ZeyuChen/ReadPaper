@@ -392,7 +392,8 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                          else:
                              if prog < current_pct and prog > 0:
                                  prog = current_pct
-                             update_status(task_key, "processing", rest, prog, msg)
+                             display_msg = rest if rest.strip() else msg
+                             update_status(task_key, "processing", display_msg, prog, msg)
                     else:
                          update_status(task_key, "processing", rest)
 

@@ -173,6 +173,13 @@ def main():
         source_dir = os.path.join(work_dir, "source")
         if not os.path.exists(source_dir):
             extract_source(tar_path, source_dir)
+            try:
+                import glob
+                num_extracted = sum(1 for _ in glob.iglob(os.path.join(source_dir, "**", "*"), recursive=True))
+                log_ipc(f"PROGRESS:EXTRACTING:Extracted {num_extracted} files from source package")
+            except Exception:
+                pass
+
 
         # Copy to working translation directory
         source_zh_dir = os.path.join(work_dir, "source_zh")

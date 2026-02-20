@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
-import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft } from 'lucide-react';
+import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft, DownloadCloud, Languages, FileCheck2, Check } from 'lucide-react';
 
 interface ClientHomeProps {
     config: {
@@ -546,23 +546,47 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
                 {/* Progress Panel */}
                 {loading && (
-                    <div className="bg-white border border-gray-200 rounded-2xl p-5 text-left shadow-sm space-y-3">
-                        {/* Slim overall progress bar */}
-                        <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium text-gray-700 truncate flex-1 flex items-center gap-1.5">
-                                {statusMessage || 'Initializing...'}
-                                <span className="inline-flex gap-0.5" aria-hidden>
-                                    {[0, 150, 300].map(delay => (
-                                        <span key={delay} className="w-1 h-1 rounded-full bg-blue-400 animate-bounce"
-                                            style={{ animationDelay: `${delay}ms` }} />
-                                    ))}
-                                </span>
-                            </span>
-                            <span className="text-sm font-semibold text-blue-600 ml-3 tabular-nums">{progress}%</span>
+                    <div className="bg-white border border-gray-200 rounded-2xl p-6 text-left shadow-sm space-y-5">
+                        {/* 3-Stage Stepper UI */}
+                        <div className="flex items-center justify-between mb-2 mt-1 px-4 relative">
+                            {/* connecting line behind */}
+                            <div className="absolute top-4 left-[20%] right-[20%] h-[2px] bg-gray-100 z-0" />
+
+                            {[
+                                { step: 1, id: 'prep', label: 'Preparation', icon: DownloadCloud, activeThreshold: 0, doneThreshold: 15 },
+                                { step: 2, id: 'trans', label: 'Translation', icon: Languages, activeThreshold: 15, doneThreshold: 90 },
+                                { step: 3, id: 'comp', label: 'Compilation', icon: FileCheck2, activeThreshold: 90, doneThreshold: 100 },
+                            ].map((s) => {
+                                const isActive = progress >= s.activeThreshold && progress < s.doneThreshold && progress < 100;
+                                const isDone = progress >= s.doneThreshold || progress === 100;
+                                const Icon = s.icon;
+
+                                return (
+                                    <div key={s.id} className="relative z-10 flex flex-col items-center gap-2 bg-white px-2">
+                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 ${isDone ? 'bg-green-100 text-green-600' : isActive ? 'bg-blue-500 text-white shadow-md shadow-blue-500/30 scale-110' : 'bg-gray-100 text-gray-400'}`}>
+                                            {isDone ? <Check size={16} strokeWidth={3} /> : <Icon size={16} />}
+                                        </div>
+                                        <span className={`text-[10px] font-bold uppercase tracking-wider ${isDone ? 'text-green-600' : isActive ? 'text-blue-600' : 'text-gray-400'}`}>
+                                            {s.label}
+                                        </span>
+                                    </div>
+                                )
+                            })}
                         </div>
-                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                            <div className="h-1.5 bg-gradient-to-r from-blue-500 to-blue-400 rounded-full"
-                                style={{ width: `${Math.max(displayProgress, 3)}%`, transition: 'width 0.1s linear' }} />
+
+                        {/* Status Message & Thin Progress Bar */}
+                        <div className="space-y-1.5 bg-gray-50/50 rounded-xl p-3 border border-gray-100">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-mono text-gray-600 truncate flex-1 flex items-center gap-2">
+                                    <span className="flex-shrink-0 w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                                    {statusMessage || 'Initializing...'}
+                                </span>
+                                <span className="text-xs font-semibold text-blue-600 ml-3 tabular-nums">{progress}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-1 overflow-hidden">
+                                <div className="h-1 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full"
+                                    style={{ width: `${Math.max(displayProgress, 2)}%`, transition: 'width 0.1s linear' }} />
+                            </div>
                         </div>
 
                         {/* Per-file status table */}
