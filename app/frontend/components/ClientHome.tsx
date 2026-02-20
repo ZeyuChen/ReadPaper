@@ -74,9 +74,13 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
     // Progress Log
     const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
+    // Elapsed timer (seconds since translation started)
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const elapsedTimerRef = useRef<NodeJS.Timeout | null>(null);
+    // Dedup: skip addLog if the message is the same as last time
+    const lastLoggedMsgRef = useRef<string>('');
 
-    // Smooth progress animation — tween displayProgress toward server `progress`.
-    // Uses requestAnimationFrame for 60fps butter-smooth bar.
+    // Smooth progress animation
     useEffect(() => {
         let rafId: number;
         const animate = () => {
@@ -202,6 +206,8 @@ export default function ClientHome({ config }: ClientHomeProps) {
         setError('');
         setStatusMessage('');
         setProgressLog([]);
+        setElapsedSeconds(0);
+        lastLoggedMsgRef.current = '';
 
         if (!session && !isLocalDev) {
             setError("Please sign in to read papers.");
@@ -209,9 +215,25 @@ export default function ClientHome({ config }: ClientHomeProps) {
         }
 
         setLoading(true);
-        setStatusMessage('Initializing translation...');
+        setStatusMessage('Starting...');
 
+        // Start elapsed timer
+        if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = setInterval(() => {
+            setElapsedSeconds(s => s + 1);
+        }, 1000);
+
+        const stopTimer = () => {
+            if (elapsedTimerRef.current) {
+                clearInterval(elapsedTimerRef.current);
+                elapsedTimerRef.current = null;
+            }
+        };
+
+        // Deduplicated addLog: only append if message changed
         const addLog = (msg: string, pct: number) => {
+            if (msg === lastLoggedMsgRef.current) return;
+            lastLoggedMsgRef.current = msg;
             const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setProgressLog(prev => [...prev.slice(-49), { time, message: msg, pct }]);
         };
@@ -228,6 +250,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
                 if (errData.status === 'completed' || errData.message === 'Already completed') {
                     setArxivId(targetId);
                     setLoading(false);
+                    stopTimer();
                     return;
                 }
                 throw new Error(errData.detail || 'Translation request failed');
@@ -242,14 +265,12 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
                     if (statusData.message) {
                         setStatusMessage(statusData.message);
-                        if (typeof statusData.progress_percent === 'number' && statusData.progress_percent > 0) {
-                            addLog(statusData.message, statusData.progress_percent);
-                        }
+                        // Surface ALL status changes to the log (not just pct > 0)
+                        addLog(statusData.message, statusData.progress_percent ?? 0);
                     }
                     if (typeof statusData.progress_percent === 'number') {
                         setProgress(statusData.progress_percent);
                     }
-                    // Merge per-file status from backend into translationFiles state
                     if (statusData.files && typeof statusData.files === 'object') {
                         setTranslationFiles(statusData.files);
                     }
@@ -259,6 +280,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
                     if (statusData.status === 'completed') {
                         clearInterval(pollInterval);
+                        stopTimer();
                         addLog('✅ Translation complete! Opening reader...', 100);
                         setTimeout(() => {
                             setArxivId(targetId);
@@ -266,9 +288,11 @@ export default function ClientHome({ config }: ClientHomeProps) {
                             setStatusMessage('');
                             setProgress(0);
                             setTranslationFiles({});
+                            setElapsedSeconds(0);
                         }, 800);
                     } else if (statusData.status === 'failed') {
                         clearInterval(pollInterval);
+                        stopTimer();
                         addLog(`❌ Failed: ${statusData.message}`, 0);
                         setError(`Translation failed: ${statusData.message || 'Unknown error'}`);
                         setLoading(false);
@@ -282,6 +306,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
             setError(err.message || 'An error occurred');
             setLoading(false);
             setStatusMessage('');
+            stopTimer();
         }
     };
 
@@ -579,14 +604,32 @@ export default function ClientHome({ config }: ClientHomeProps) {
                             <div className="flex items-center justify-between">
                                 <span className="text-xs font-mono text-gray-600 truncate flex-1 flex items-center gap-2">
                                     <span className="flex-shrink-0 w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                                    {statusMessage || 'Initializing...'}
+                                    {statusMessage || 'Starting...'}
                                 </span>
-                                <span className="text-xs font-semibold text-blue-600 ml-3 tabular-nums">{progress}%</span>
+                                <div className="flex items-center gap-3 ml-3 flex-shrink-0">
+                                    {elapsedSeconds > 0 && (
+                                        <span className="text-[10px] text-gray-400 tabular-nums font-mono">
+                                            {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')} elapsed
+                                        </span>
+                                    )}
+                                    <span className="text-xs font-semibold text-blue-600 tabular-nums">{progress}%</span>
+                                </div>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-1 overflow-hidden">
                                 <div className="h-1 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full"
                                     style={{ width: `${Math.max(displayProgress, 2)}%`, transition: 'width 0.1s linear' }} />
                             </div>
+                            {/* Recent log strip — last 3 unique status entries */}
+                            {progressLog.length > 1 && (
+                                <div className="pt-1 space-y-0.5">
+                                    {progressLog.slice(-3).map((entry, i) => (
+                                        <div key={i} className="flex items-center gap-1.5 text-[10px] text-gray-400 font-mono">
+                                            <span className="text-gray-300">{entry.time}</span>
+                                            <span className="truncate">{entry.message}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
 
                         {/* Per-file status table */}

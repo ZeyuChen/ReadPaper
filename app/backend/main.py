@@ -260,149 +260,160 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=work_root, # It will create workspace_{id} inside here
+            cwd=work_root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env
         )
-        
-                # Stream logs
+
+        # ── Critical: drain stderr concurrently to prevent pipe-buffer deadlock ──
+        # If we only read stdout, the subprocess can fill the stderr OS pipe buffer
+        # (~64 KB) and block indefinitely, freezing the entire IPC stream.
+        stderr_lines: list[str] = []
+
+        async def drain_stderr():
+            assert process.stderr is not None
+            while True:
+                raw = await process.stderr.readline()
+                if not raw:
+                    break
+                line_text = raw.decode("utf-8", errors="replace").rstrip()
+                stderr_lines.append(line_text)
+                # Cap in-memory collection to last 200 lines
+                if len(stderr_lines) > 200:
+                    stderr_lines.pop(0)
+                logger.debug(f"[translator] {line_text}")
+
+        stderr_task = asyncio.create_task(drain_stderr())
+
+        # ── Stream and parse stdout IPC messages ──────────────────────────────
+        status_map = {
+            "DOWNLOADING": (5,  "Downloading source package..."),
+            "EXTRACTING":  (8,  "Extracting source files..."),
+            "PRE_FLIGHT":  (12, "Running pre-flight checks..."),
+            "TRANSLATING": (15, "Translating..."),
+            "ANALYZING":   (15, "Analyzing (DeepDive)..."),
+            "POST_PROCESSING": (85, "Cleaning up LaTeX..."),
+            "COMPILING":   (90, "Compiling final PDF (pdfLaTeX)..."),
+            "COMPLETED":   (100, "Done"),
+            "COMPLETED_WITH_WARNINGS": (100, "Done (with warnings)"),
+            "WARN":  (85, "Warning"),
+            "FAILED": (0, "Failed"),
+        }
+
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
                 break
             line = line_bytes.decode('utf-8').strip()
             if line.startswith("PROGRESS:"):
-                # Parse progress
+                # Parse: PROGRESS:CODE:rest  (split at most twice)
                 parts = line.split(":", 2)
-                if len(parts) >= 3:
-                    code, rest = parts[1], parts[2]
-                    status_map = {
-                        "DOWNLOADING": (5, "Downloading source..."),
-                        "EXTRACTING": (8, "Extracting files..."),
-                        "PRE_FLIGHT": (10, "Pre-flight compilation check..."),
-                        "TRANSLATING": (15, "Translating..."),
-                        "ANALYZING": (15, "Analyzing DeepDive..."),
-                        "POST_PROCESSING": (85, "Cleaning up LaTeX..."),
-                        "COMPILING": (90, "Compiling final PDF..."),
-                        "COMPLETED": (100, "Done"),
-                        "COMPLETED_WITH_WARNINGS": (100, "Done (with warnings)"),
-                        "WARN": (85, "Warning"),
-                        "FAILED": (0, "Failed")
-                    }
+                if len(parts) < 3:
+                    continue
+                code, rest = parts[1], parts[2]
 
-                    # Fetch current progress to ensure monotonicity
-                    current_status = TASK_STATUS.get(task_key, {})
-                    current_pct = current_status.get("progress_percent", 0)
+                # Fetch current progress to ensure monotonicity
+                current_status = TASK_STATUS.get(task_key, {})
+                current_pct = current_status.get("progress_percent", 0)
 
-                    # ── Per-file FILE_LIST: initialise files dict ──────────────
-                    if code == "FILE_LIST":
-                        # rest = "main.tex|intro.tex|method.tex"
-                        names = [n.strip() for n in rest.split("|") if n.strip()]
-                        files = {n: {"status": "pending", "batches_done": 0, "batches_total": 0} for n in names}
+                # ── Per-file FILE_LIST: initialise files dict ──────────────
+                if code == "FILE_LIST":
+                    names = [n.strip() for n in rest.split("|") if n.strip()]
+                    files = {n: {"status": "pending", "batches_done": 0, "batches_total": 0} for n in names}
+                    current_state = TASK_STATUS.get(task_key, {})
+                    TASK_STATUS[task_key] = {**current_state, "files": files}
+
+                # ── Per-file FILE_DONE ──────────────────────────────────────
+                elif code == "FILE_DONE":
+                    fd_parts = rest.split(":", 1)
+                    if len(fd_parts) == 2:
+                        fname, outcome = fd_parts
+                        update_file_status(
+                            task_key, fname.strip(),
+                            "done" if outcome.strip() == "ok" else "failed"
+                        )
+
+                # ── Fine-grained batch progress ────────────────────────────
+                elif code == "BATCH_PROGRESS":
+                    try:
+                        bp_parts = rest.split(":", 2)
+                        if len(bp_parts) >= 3:
+                            b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
+                            update_file_status(task_key, fname, "translating", b_done, b_total)
+                            if b_total > 0:
+                                new_pct = 15 + int((b_done / b_total) * 70)
+                                pct = max(new_pct, current_pct)
+                            else:
+                                pct = current_pct
+                            update_status(task_key, "processing",
+                                          f"Translating {fname} — batch {b_done}/{b_total}", pct)
+                    except Exception:
+                        update_status(task_key, "processing", "Translating...", current_pct)
+
+                # ── Heartbeat ──────────────────────────────────────────────
+                elif code == "HEARTBEAT":
+                    update_status(task_key, "processing", "Translating... ⚙", current_pct)
+
+                # ── File-level TRANSLATING:count:total:message ─────────────
+                elif code == "TRANSLATING":
+                    try:
+                        p_parts = rest.split(":", 2)
+                        if len(p_parts) >= 3:
+                            count, total = int(p_parts[0]), int(p_parts[1])
+                            msg = p_parts[2]
+                            pct = max(15 + int((count / total) * 70), current_pct) if total > 0 else current_pct
+                            update_status(task_key, "processing", f"Translating: {msg}", pct)
+                        else:
+                            update_status(task_key, "processing", f"Translating: {rest}", current_pct)
+                    except Exception:
+                        update_status(task_key, "processing", f"Translating: {rest}", current_pct)
+
+                # ── DeepDive ANALYZING:count:total:message ─────────────────
+                elif code == "ANALYZING":
+                    try:
+                        p_parts = rest.split(":", 2)
+                        if len(p_parts) >= 3:
+                            count, total = int(p_parts[0]), int(p_parts[1])
+                            msg = p_parts[2]
+                            pct = max(15 + int((count / total) * 15), current_pct) if total > 0 else current_pct
+                            update_status(task_key, "processing", f"DeepDive: {msg}", pct)
+                        else:
+                            update_status(task_key, "processing", f"DeepDive: {rest}", current_pct)
+                    except Exception:
+                        update_status(task_key, "processing", f"DeepDive: {rest}", current_pct)
+
+                # ── Standard status_map codes ──────────────────────────────
+                elif code in status_map:
+                    prog, default_msg = status_map[code]
+                    if code == "COMPLETED":
+                        update_status(task_key, "processing", "Finalizing upload...", 99)
+                    elif code == "COMPLETED_WITH_WARNINGS":
+                        update_status(task_key, "processing", "Finalizing upload (with warnings)...", 99, rest)
+                    elif code == "WARN":
+                        update_status(task_key, "processing", rest, current_pct, rest)
+                    elif code == "FAILED":
                         current_state = TASK_STATUS.get(task_key, {})
-                        TASK_STATUS[task_key] = {**current_state, "files": files}
-
-                    # ── Per-file FILE_DONE: mark individual file complete ──────
-                    elif code == "FILE_DONE":
-                        # rest = "main.tex:ok" or "main.tex:fail"
-                        fd_parts = rest.split(":", 1)
-                        if len(fd_parts) == 2:
-                            fname, outcome = fd_parts
-                            update_file_status(
-                                task_key, fname.strip(),
-                                "done" if outcome.strip() == "ok" else "failed"
-                            )
-
-                    # ── Fine-grained batch progress ────────────────────────────
-                    elif code == "BATCH_PROGRESS":
-                        try:
-                            bp_parts = rest.split(":", 2)
-                            if len(bp_parts) >= 3:
-                                b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
-                                # Set file status -> translating and update batch counts
-                                update_file_status(task_key, fname, "translating", b_done, b_total)
-                                # Map within translation range 15-85%
-                                if b_total > 0:
-                                    new_pct = 15 + int((b_done / b_total) * 70)
-                                    pct = max(new_pct, current_pct)
-                                else:
-                                    pct = current_pct
-                                update_status(
-                                    task_key, "processing",
-                                    f"Translating {fname} — batch {b_done}/{b_total}",
-                                    pct
-                                )
-                        except Exception:
-                            update_status(task_key, "processing", "Translating...", current_pct)
-
-                    # ── Heartbeat: keep frontend alive without changing percent ──
-                    elif code == "HEARTBEAT":
-                        update_status(task_key, "processing", "Translating... ⚙", current_pct)
-
-                    # ── File-level TRANSLATING:count:total:filename ──
-                    elif code == "TRANSLATING" and ":" in rest:
-                         try:
-                             p_parts = rest.split(":", 2)
-                             if len(p_parts) >= 3:
-                                 c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
-                                 count = int(c_part)
-                                 total = int(t_part)
-                                 if total > 0:
-                                     pct = max(15 + int((count / total) * 70), current_pct)
-                                 else:
-                                     pct = current_pct
-                                 update_status(task_key, "processing", f"Translating: {msg}", pct)
-                             else:
-                                 update_status(task_key, "processing", f"Translating: {rest}")
-                         except Exception:
-                             update_status(task_key, "processing", f"Translating: {rest.split(':')[-1]}")
-
-                    # ── DeepDive ANALYZING:count:total:filename ──
-                    elif code == "ANALYZING" and ":" in rest:
-                         try:
-                             p_parts = rest.split(":", 2)
-                             if len(p_parts) >= 3:
-                                 c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
-                                 count = int(c_part)
-                                 total = int(t_part)
-                                 if total > 0:
-                                     pct = max(15 + int((count / total) * 15), current_pct)
-                                 else:
-                                     pct = current_pct
-                                 update_status(task_key, "processing", f"DeepDive Analyzing: {msg}", pct)
-                             else:
-                                 update_status(task_key, "processing", f"DeepDive Analyzing: {rest}")
-                         except Exception:
-                             update_status(task_key, "processing", f"DeepDive Analyzing: {rest.split(':')[-1]}")
-
-                    elif code in status_map:
-                         prog, msg = status_map[code]
-                         if code == "COMPLETED":
-                             update_status(task_key, "processing", "Finalizing upload...", 99)
-                         elif code == "COMPLETED_WITH_WARNINGS":
-                             update_status(task_key, "processing", "Finalizing upload...", 99, rest)
-                         elif code == "WARN":
-                             update_status(task_key, "processing", rest, current_pct, rest)
-                         elif code == "FAILED":
-                             # Store the compile error log for frontend display
-                             current_state = TASK_STATUS.get(task_key, {})
-                             TASK_STATUS[task_key] = {**current_state, "compile_log": rest}
-                             update_status(task_key, "failed", rest, 0)
-                         else:
-                             if prog < current_pct and prog > 0:
-                                 prog = current_pct
-                             display_msg = rest if rest.strip() else msg
-                             update_status(task_key, "processing", display_msg, prog, msg)
+                        TASK_STATUS[task_key] = {**current_state, "compile_log": rest}
+                        update_status(task_key, "failed", rest, 0)
                     else:
-                         update_status(task_key, "processing", rest)
+                        prog = max(prog, current_pct)
+                        display_msg = rest.strip() if rest.strip() else default_msg
+                        update_status(task_key, "processing", display_msg, prog)
+                else:
+                    # Unknown code — surface the raw message
+                    update_status(task_key, "processing", rest, current_pct)
+
+        # Wait for stderr drainer to finish
+        await stderr_task
 
         return_code = await process.wait()
-        
+
         if return_code != 0:
-            stderr = await process.stderr.read()
-            err_msg = stderr.decode('utf-8')
-            update_status(task_key, "failed", f"Process failed: {err_msg[:200]}")
+            # Use collected stderr lines for a meaningful error message
+            err_snippet = "\n".join(stderr_lines[-20:]) if stderr_lines else "(no stderr output)"
+            err_preview = err_snippet[:500]
+            update_status(task_key, "failed", f"Translator process exited with code {return_code}.\n{err_preview}")
             return
 
         # 3. Upload Results to User Storage
