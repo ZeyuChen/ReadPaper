@@ -370,70 +370,75 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
     return (
         <div className="flex h-screen bg-white overflow-hidden font-sans">
             {/* ── Sidebar ── */}
-            <div className={`${showSidebar ? 'w-64' : 'w-0'} flex-shrink-0 bg-[#f8f9fa] border-r border-[#dadce0] transition-all duration-300 flex flex-col overflow-hidden`}>
-                <div className="p-3 flex items-center justify-between flex-shrink-0">
-                    <button onClick={onBack} className="p-2 text-[#5f6368] hover:bg-[#e8eaed] rounded-full transition-colors" title="Back (B)">
-                        <ArrowLeft size={18} />
-                    </button>
-                    <button
-                        onClick={() => setShowAddModal(true)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-[#3c4043] border border-[#dadce0] rounded-full hover:shadow-md transition-shadow text-xs font-medium"
-                    >
-                        <Plus size={14} className="text-[#1a73e8]" /> New
-                    </button>
-                </div>
-
-                <div className="px-3 pb-1">
-                    <p className="text-[10px] font-bold text-[#5f6368] uppercase tracking-wider px-2 mb-1">My Library</p>
-                </div>
-
-                <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5">
-                    {papers.map((p) => (
-                        <div
-                            key={p.id}
-                            onClick={() => onPaperSelect(p.id)}
-                            className={`px-3 py-2.5 rounded-lg cursor-pointer transition-all ${p.id === arxivId
-                                ? 'bg-[#e8f0fe] text-[#1967d2]'
-                                : 'text-[#3c4043] hover:bg-[#f1f3f4]'}`}
+            <div className="relative flex-shrink-0 flex">
+                <div className={`${showSidebar ? 'w-64' : 'w-0'
+                    } bg-[#f8f9fa] border-r border-[#dadce0] transition-all duration-300 flex flex-col overflow-hidden`}>
+                    <div className="p-3 flex items-center justify-between flex-shrink-0">
+                        <button onClick={onBack} className="p-2 text-[#5f6368] hover:bg-[#e8eaed] rounded-full transition-colors" title="Back">
+                            <ArrowLeft size={18} />
+                        </button>
+                        <button
+                            onClick={() => setShowAddModal(true)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-[#3c4043] border border-[#dadce0] rounded-full hover:shadow-md transition-shadow text-xs font-medium"
                         >
-                            <div className="text-xs font-medium leading-snug line-clamp-2">{p.title || `arXiv:${p.id}`}</div>
-                            <div className={`text-[10px] font-mono mt-0.5 ${p.id === arxivId ? 'text-[#1967d2]/70' : 'text-[#9aa0a6]'}`}>{p.id}</div>
-                        </div>
-                    ))}
-                    {papers.length === 0 && (
-                        <div className="text-center py-8 text-[#9aa0a6] text-xs">No papers yet</div>
-                    )}
-                </div>
+                            <Plus size={14} className="text-[#1a73e8]" /> New
+                        </button>
+                    </div>
 
-                <div className="p-3 border-t border-[#dadce0] flex-shrink-0">
-                    <div className="flex items-center gap-2 px-2">
-                        {session?.user?.image ? (
-                            <Image src={session.user.image} alt="Profile" width={22} height={22} className="rounded-full" />
-                        ) : (
-                            <div className="h-5 w-5 rounded-full bg-[#1a73e8] flex items-center justify-center text-white text-[9px]">
-                                {(session?.user?.name?.[0] || 'U').toUpperCase()}
+                    <div className="px-3 pb-1">
+                        <p className="text-[10px] font-bold text-[#5f6368] uppercase tracking-wider px-2 mb-1">My Library</p>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5">
+                        {papers.map((p) => (
+                            <div
+                                key={p.id}
+                                onClick={() => onPaperSelect(p.id)}
+                                className={`px-3 py-2.5 rounded-lg cursor-pointer transition-all ${p.id === arxivId
+                                        ? 'bg-[#e8f0fe] text-[#1967d2]'
+                                        : 'text-[#3c4043] hover:bg-[#f1f3f4]'
+                                    }`}
+                            >
+                                <div className="text-xs font-medium leading-snug line-clamp-2">{p.title || `arXiv:${p.id}`}</div>
+                                <div className={`text-[10px] font-mono mt-0.5 ${p.id === arxivId ? 'text-[#1967d2]/70' : 'text-[#9aa0a6]'}`}>{p.id}</div>
                             </div>
+                        ))}
+                        {papers.length === 0 && (
+                            <div className="text-center py-8 text-[#9aa0a6] text-xs">No papers yet</div>
                         )}
-                        <span className="text-[11px] text-[#5f6368] truncate">{session?.user?.name || 'User'}</span>
+                    </div>
+
+                    <div className="p-3 border-t border-[#dadce0] flex-shrink-0">
+                        <div className="flex items-center gap-2 px-2">
+                            {session?.user?.image ? (
+                                <Image src={session.user.image} alt="Profile" width={22} height={22} className="rounded-full" />
+                            ) : (
+                                <div className="h-5 w-5 rounded-full bg-[#1a73e8] flex items-center justify-center text-white text-[9px]">
+                                    {(session?.user?.name?.[0] || 'U').toUpperCase()}
+                                </div>
+                            )}
+                            <span className="text-[11px] text-[#5f6368] truncate">{session?.user?.name || 'User'}</span>
+                        </div>
                     </div>
                 </div>
+
+                {/* ── Always-visible sidebar toggle tab ── */}
+                <button
+                    onClick={() => setShowSidebar(s => !s)}
+                    title={showSidebar ? 'Collapse sidebar (S)' : 'Expand sidebar (S)'}
+                    className="absolute -right-3 top-1/2 -translate-y-1/2 z-20 w-6 h-12 bg-white border border-[#dadce0] rounded-r-lg shadow-sm flex items-center justify-center text-[#5f6368] hover:text-[#1a73e8] hover:border-[#1a73e8] hover:shadow-md transition-all group"
+                >
+                    <ChevronLeft
+                        size={14}
+                        className={`transition-transform duration-300 ${showSidebar ? '' : 'rotate-180'}`}
+                    />
+                </button>
             </div>
 
             {/* ── Main Content ── */}
             <div className="flex-1 flex flex-col h-screen min-w-0">
                 {/* Header */}
                 <div className="bg-white border-b border-[#dadce0] px-3 py-2 flex items-center gap-2 flex-shrink-0 z-10">
-                    {/* Sidebar toggle */}
-                    {!showSidebar && (
-                        <button onClick={() => setShowSidebar(true)} className="p-1.5 text-[#5f6368] hover:bg-[#f1f3f4] rounded-full" title="Show sidebar (S)">
-                            <Menu size={18} />
-                        </button>
-                    )}
-                    {showSidebar && (
-                        <button onClick={() => setShowSidebar(false)} className="p-1.5 text-[#5f6368] hover:bg-[#f1f3f4] rounded-full" title="Hide sidebar (S)">
-                            <ChevronLeft size={18} />
-                        </button>
-                    )}
 
                     {/* Title */}
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -508,13 +513,7 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
                     </div>
                 </div>
 
-                {/* Keyboard shortcuts hint */}
-                <div className="bg-blue-50/50 border-b border-blue-100 px-4 py-1 flex items-center gap-4 text-[10px] text-gray-400 flex-shrink-0">
-                    <span><kbd className="bg-white border border-gray-200 rounded px-1 py-0.5 font-mono text-[9px]">⌘+</kbd> Zoom in</span>
-                    <span><kbd className="bg-white border border-gray-200 rounded px-1 py-0.5 font-mono text-[9px]">⌘-</kbd> Zoom out</span>
-                    <span><kbd className="bg-white border border-gray-200 rounded px-1 py-0.5 font-mono text-[9px]">N</kbd> Notes</span>
-                    <span><kbd className="bg-white border border-gray-200 rounded px-1 py-0.5 font-mono text-[9px]">S</kbd> Toggle sidebar</span>
-                </div>
+
 
                 {/* PDF Area */}
                 <div className="flex flex-1 overflow-hidden bg-[#e8eaed]" ref={containerRef}>

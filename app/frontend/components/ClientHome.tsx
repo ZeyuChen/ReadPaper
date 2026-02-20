@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
-import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw } from 'lucide-react';
+import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield } from 'lucide-react';
 
 interface ClientHomeProps {
     config: {
@@ -295,6 +295,16 @@ export default function ClientHome({ config }: ClientHomeProps) {
                     </button>
                 ) : (
                     <div className="flex items-center gap-3">
+                        {/* Admin link — only visible to super admin */}
+                        {session?.user?.email === 'chinachenzeyu@gmail.com' && (
+                            <a
+                                href="/admin"
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#1a73e8] bg-blue-50 hover:bg-blue-100 rounded-full transition-colors border border-blue-100"
+                                title="Admin Dashboard"
+                            >
+                                <Shield size={12} /> Admin
+                            </a>
+                        )}
                         <div className="flex flex-col items-end mr-1">
                             <span className="text-xs font-medium text-gray-700">{session?.user?.name || 'Local Dev'}</span>
                             <span className="text-[10px] text-gray-500">{session?.user?.email}</span>

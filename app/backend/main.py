@@ -615,3 +615,88 @@ async def get_tasks(user_id: str = Depends(get_current_user)):
             user_tasks.append(task_data)
             
     return user_tasks
+
+
+# ── Admin Endpoints ─────────────────────────────────────────────────────────
+
+SUPER_ADMIN_EMAIL = "chinachenzeyu@gmail.com"
+
+async def require_admin(user_id: str = Depends(get_current_user)) -> str:
+    """
+    Dependency: only allows the super-admin user through.
+    user_id is the verified Google email from the JWT.
+    Raises HTTP 403 for all other users.
+    """
+    if user_id != SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user_id
+
+
+async def _list_all_user_ids() -> list[str]:
+    """
+    Enumerate all user IDs that have stored data.
+    Works for both GCS and local storage modes.
+    """
+    user_ids = []
+    if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME and isinstance(root_storage, GCSStorageService):
+        # GCS: list blobs with prefix="users/" and delimiter="/" to get top-level user folders
+        client = root_storage.client
+        iterator = client.list_blobs(GCS_BUCKET_NAME, prefix="users/", delimiter="/")
+        _ = list(iterator)  # force iteration to populate .prefixes
+        for prefix in (iterator.prefixes or []):
+            # Each prefix looks like "users/user@email.com/"
+            uid = prefix.removeprefix("users/").rstrip("/")
+            if uid:
+                user_ids.append(uid)
+    else:
+        # Local storage: scan PAPER_STORAGE_ROOT/users/ directories
+        users_dir = os.path.join(PAPER_STORAGE_ROOT, "users")
+        if os.path.isdir(users_dir):
+            user_ids = [
+                d for d in os.listdir(users_dir)
+                if os.path.isdir(os.path.join(users_dir, d))
+            ]
+    return sorted(user_ids)
+
+
+@app.get("/admin/papers")
+async def admin_list_all_papers(admin_id: str = Depends(require_admin)):
+    """
+    Admin endpoint: aggregate all papers across all users.
+    Returns: list of paper dicts, each enriched with a `user_id` field.
+    """
+    user_ids = await _list_all_user_ids()
+    result = []
+    for uid in user_ids:
+        try:
+            user_storage = root_storage.get_user_storage(uid)
+            lib = LibraryManager(user_storage)
+            papers = await lib.list_papers()
+            for paper in papers:
+                result.append({"user_id": uid, **paper})
+        except Exception as e:
+            logger.warning(f"Could not load library for user {uid}: {e}")
+    return result
+
+
+@app.get("/admin/stats")
+async def admin_stats(admin_id: str = Depends(require_admin)):
+    """
+    Admin endpoint: high-level stats — total users & papers.
+    """
+    user_ids = await _list_all_user_ids()
+    total_papers = 0
+    for uid in user_ids:
+        try:
+            user_storage = root_storage.get_user_storage(uid)
+            lib = LibraryManager(user_storage)
+            papers = await lib.list_papers()
+            total_papers += len(papers)
+        except Exception:
+            pass
+    return {
+        "total_users": len(user_ids),
+        "total_papers": total_papers,
+        "user_ids": user_ids,
+    }
+
