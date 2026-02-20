@@ -59,7 +59,9 @@ def translate_file_worker(api_key: str, model_name: str, file_path: str) -> tupl
             return True, file_path, 0
 
         # Translate nodes (in-place) — returns (nodes, failed_count)
-        nodes, failed_count = translator.translate_text_nodes(nodes)
+        # Pass file_name so IPC BATCH_PROGRESS lines are labelled per file.
+        file_name = os.path.basename(file_path)
+        nodes, failed_count = translator.translate_text_nodes(nodes, file_name=file_name)
 
         # Reintegrate translations into original content
         translated_content = extractor.reintegrate(content, nodes)

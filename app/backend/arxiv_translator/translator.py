@@ -274,21 +274,64 @@ Output: 该模型在基准数据集上达到了 95% 的准确率。
         self,
         nodes: List[TextNode],
         max_chunk_chars: int = _DEFAULT_CHUNK_CHARS,
+        file_name: str = "file.tex",
     ) -> int:
         """
         Split nodes into batches, then fire ALL batches concurrently.
+        Emits PROGRESS:BATCH_PROGRESS IPC after each batch so the frontend
+        progress bar advances smoothly instead of hanging then jumping.
+        Also runs a heartbeat coroutine that emits PROGRESS:HEARTBEAT every 5 s.
         Returns total failed node count.
         """
         chunks = split_into_paragraphs(nodes, max_chars=max_chunk_chars)
+        total_batches = len(chunks)
         logger.info(
-            f"Translating {len(nodes)} text nodes in {len(chunks)} concurrent batches "
+            f"Translating {len(nodes)} nodes in {total_batches} concurrent batches "
             f"(chunk_chars={max_chunk_chars}, max_concurrency={_MAX_BATCH_CONCURRENCY})"
         )
+
+        # Shared mutable counter tracked under a lock (immutability N/A for counters).
+        counter: list[int] = [0]
+        lock = asyncio.Lock()
+        done_event = asyncio.Event()
+
+        async def _tracked_chunk(chunk: list) -> int:
+            """Wrapper: translate a chunk, then bump the IPC counter."""
+            failed = await self._async_translate_chunk(chunk, semaphore)
+            async with lock:
+                counter[0] += 1
+                done = counter[0]
+            # Emit IPC on stdout — parsed by backend main.py run_translation_stream
+            print(
+                f"PROGRESS:BATCH_PROGRESS:{done}:{total_batches}:{file_name}",
+                flush=True,
+            )
+            return failed
+
+        async def _heartbeat() -> None:
+            """Emit a heartbeat IPC every 5 s so the frontend never sees a dead process."""
+            while not done_event.is_set():
+                try:
+                    await asyncio.wait_for(asyncio.shield(done_event.wait()), timeout=5.0)
+                except asyncio.TimeoutError:
+                    if not done_event.is_set():
+                        print("PROGRESS:HEARTBEAT:Translating...", flush=True)
+
         semaphore = asyncio.Semaphore(_MAX_BATCH_CONCURRENCY)
-        results = await asyncio.gather(
-            *[self._async_translate_chunk(chunk, semaphore) for chunk in chunks],
-            return_exceptions=False,
-        )
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        try:
+            results = await asyncio.gather(
+                *[_tracked_chunk(chunk) for chunk in chunks],
+                return_exceptions=False,
+            )
+        finally:
+            done_event.set()
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
         return sum(results)
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -297,22 +340,25 @@ Output: 该模型在基准数据集上达到了 95% 的准确率。
         self,
         nodes: List[TextNode],
         max_chunk_chars: int = _DEFAULT_CHUNK_CHARS,
-    ) -> tuple[List[TextNode], int]:
+        file_name: str = "file.tex",
+    ) -> tuple[list[TextNode], int]:
         """
         Translate a list of TextNodes in-place.
 
-        All translation batches are fired concurrently via asyncio.gather, limited
-        by MAX_BATCH_CONCURRENCY (default 8) to respect Gemini API rate limits.
+        All batches are fired concurrently via asyncio.gather, limited by
+        MAX_BATCH_CONCURRENCY (default 8).  Emits PROGRESS:BATCH_PROGRESS IPC
+        after each completed batch so the backend can stream fine-grained
+        progress to the frontend.
 
         Returns:
             (nodes, failed_count) — nodes with .translated filled in.
-            failed_count: number of nodes that fell back to original English.
+            failed_count: nodes that fell back to original English.
         """
         if not nodes:
             return nodes, 0
 
         total_failed = asyncio.run(
-            self._translate_all_batches_async(nodes, max_chunk_chars)
+            self._translate_all_batches_async(nodes, max_chunk_chars, file_name)
         )
         return nodes, total_failed
 

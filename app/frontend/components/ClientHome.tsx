@@ -36,6 +36,9 @@ export default function ClientHome({ config }: ClientHomeProps) {
     const [error, setError] = useState('');
     const [statusMessage, setStatusMessage] = useState('');
     const [progress, setProgress] = useState(0);
+    // displayProgress is smoothly animated toward `progress` via rAF — never snaps.
+    const [displayProgress, setDisplayProgress] = useState(0);
+    const displayProgressRef = useRef(0);
     const [library, setLibrary] = useState<any[]>([]);
     const [useDeepDive, setUseDeepDive] = useState(false);
 
@@ -52,6 +55,29 @@ export default function ClientHome({ config }: ClientHomeProps) {
 
     // Progress Log
     const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
+
+    // Smooth progress animation — tween displayProgress toward server `progress`.
+    // Uses requestAnimationFrame for 60fps butter-smooth bar.
+    useEffect(() => {
+        let rafId: number;
+        const animate = () => {
+            const target = progress;
+            const current = displayProgressRef.current;
+            const diff = target - current;
+            if (Math.abs(diff) < 0.1) {
+                displayProgressRef.current = target;
+            } else {
+                // Move at 0.8% per frame (≈ 48% per second) — fast enough to feel live,
+                // slow enough to feel smooth. Never moves backward.
+                const step = diff > 0 ? Math.min(diff, 0.8) : 0;
+                displayProgressRef.current = current + step;
+            }
+            setDisplayProgress(Math.round(displayProgressRef.current * 10) / 10);
+            rafId = requestAnimationFrame(animate);
+        };
+        rafId = requestAnimationFrame(animate);
+        return () => cancelAnimationFrame(rafId);
+    }, [progress]);
 
     // Library UI State
     const [librarySearch, setLibrarySearch] = useState('');
@@ -466,15 +492,31 @@ export default function ClientHome({ config }: ClientHomeProps) {
                 {/* Progress Panel */}
                 {loading && (
                     <div className="bg-white border border-gray-200 rounded-2xl p-5 text-left shadow-sm space-y-3">
-                        {/* Progress Bar */}
+                        {/* Progress Bar — uses animated displayProgress, not raw server value */}
                         <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium text-gray-700 truncate flex-1">{statusMessage || 'Initializing...'}</span>
+                            <span className="text-sm font-medium text-gray-700 truncate flex-1 flex items-center gap-1.5">
+                                {statusMessage || 'Initializing...'}
+                                {/* Pulsing dot shows the process is alive */}
+                                <span className="inline-flex gap-0.5" aria-hidden>
+                                    {[0, 150, 300].map(delay => (
+                                        <span
+                                            key={delay}
+                                            className="w-1 h-1 rounded-full bg-blue-400 animate-bounce"
+                                            style={{ animationDelay: `${delay}ms` }}
+                                        />
+                                    ))}
+                                </span>
+                            </span>
                             <span className="text-sm font-semibold text-blue-600 ml-3 tabular-nums">{progress}%</span>
                         </div>
                         <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                             <div
-                                className="h-2 bg-gradient-to-r from-blue-500 to-blue-400 rounded-full transition-all duration-500"
-                                style={{ width: `${Math.max(progress, 3)}%` }}
+                                className="h-2 bg-gradient-to-r from-blue-500 to-blue-400 rounded-full"
+                                style={{
+                                    width: `${Math.max(displayProgress, 3)}%`,
+                                    // CSS transition only as safety net — primary animation is rAF above.
+                                    transition: 'width 0.1s linear',
+                                }}
                             />
                         </div>
 

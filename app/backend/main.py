@@ -255,12 +255,10 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                 break
             line = line_bytes.decode('utf-8').strip()
             if line.startswith("PROGRESS:"):
-                # Parse progress (simplified)
+                # Parse progress
                 parts = line.split(":", 2)
                 if len(parts) >= 3:
                     code, rest = parts[1], parts[2]
-                    # Map codes to status
-                    # Map codes to status
                     status_map = {
                         "DOWNLOADING": (5, "Downloading source..."),
                         "EXTRACTING": (8, "Extracting files..."),
@@ -274,78 +272,85 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                         "WARN": (85, "Warning"),
                         "FAILED": (0, "Failed")
                     }
-                    
+
                     # Fetch current progress to ensure monotonicity
                     current_status = TASK_STATUS.get(task_key, {})
                     current_pct = current_status.get("progress_percent", 0)
 
-                    # Handle advanced TRANSLATING:X:Y:File
-                    if code == "TRANSLATING" and ":" in rest:
+                    # ── Fine-grained batch progress (emitted by translator.py per batch) ──
+                    # Format: PROGRESS:BATCH_PROGRESS:done:total:filename
+                    # Accumulated across ALL files: track a global running counter.
+                    if code == "BATCH_PROGRESS":
+                        try:
+                            bp_parts = rest.split(":", 2)
+                            if len(bp_parts) >= 3:
+                                b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
+                                # Map within translation range 15–85%
+                                # Use current_pct as floor to ensure monotonicity.
+                                if b_total > 0:
+                                    new_pct = 15 + int((b_done / b_total) * 70)
+                                    pct = max(new_pct, current_pct)
+                                else:
+                                    pct = current_pct
+                                update_status(
+                                    task_key, "processing",
+                                    f"Translating {fname} — batch {b_done}/{b_total}",
+                                    pct
+                                )
+                        except Exception:
+                            update_status(task_key, "processing", "Translating...", current_pct)
+
+                    # ── Heartbeat: keep frontend alive without changing percent ──
+                    elif code == "HEARTBEAT":
+                        update_status(task_key, "processing", "Translating... ⚙", current_pct)
+
+                    # ── File-level TRANSLATING:count:total:filename ──
+                    elif code == "TRANSLATING" and ":" in rest:
                          try:
-                             # Format: count:total:filename
                              p_parts = rest.split(":", 2)
                              if len(p_parts) >= 3:
                                  c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
                                  count = int(c_part)
                                  total = int(t_part)
-                                 
-                                 pct = current_pct
                                  if total > 0:
-                                     # Range: 15% -> 85%
-                                     # Formula: 15 + (count / total) * 70
-                                     pct = 15 + int((count / total) * 70)
-                                 
-                                 # Ensure monotonicity
-                                 if pct < current_pct:
+                                     pct = max(15 + int((count / total) * 70), current_pct)
+                                 else:
                                      pct = current_pct
-                                     
                                  update_status(task_key, "processing", f"Translating: {msg}", pct)
                              else:
                                  update_status(task_key, "processing", f"Translating: {rest}")
-                         except Exception as e:
+                         except Exception:
                              update_status(task_key, "processing", f"Translating: {rest.split(':')[-1]}")
 
-                    # Handle advanced ANALYZING:X:Y:File
+                    # ── DeepDive ANALYZING:count:total:filename ──
                     elif code == "ANALYZING" and ":" in rest:
                          try:
-                             # Format: count:total:filename
                              p_parts = rest.split(":", 2)
                              if len(p_parts) >= 3:
                                  c_part, t_part, msg = p_parts[0], p_parts[1], p_parts[2]
                                  count = int(c_part)
                                  total = int(t_part)
-                                 
-                                 pct = current_pct
                                  if total > 0:
-                                     # Range: 15% -> 30% (DeepDive phase)
-                                     pct = 15 + int((count / total) * 15)
-                                 
-                                 # Ensure monotonicity
-                                 if pct < current_pct:
+                                     pct = max(15 + int((count / total) * 15), current_pct)
+                                 else:
                                      pct = current_pct
-
                                  update_status(task_key, "processing", f"DeepDive Analyzing: {msg}", pct)
                              else:
                                  update_status(task_key, "processing", f"DeepDive Analyzing: {rest}")
-                         except:
+                         except Exception:
                              update_status(task_key, "processing", f"DeepDive Analyzing: {rest.split(':')[-1]}")
 
                     elif code in status_map:
                          prog, msg = status_map[code]
                          if code == "COMPLETED":
-                             # Do not mark as fully completed yet. Wait for upload to finish.
                              update_status(task_key, "processing", "Finalizing upload...", 99)
                          elif code == "COMPLETED_WITH_WARNINGS":
-                             # Mark as fully completed but include warning details
                              update_status(task_key, "processing", "Finalizing upload...", 99, rest)
                          elif code == "WARN":
-                             # Non-fatal warning: keep processing state, store as detail
                              update_status(task_key, "processing", rest, current_pct, rest)
                          elif code == "FAILED":
                              update_status(task_key, "failed", rest, 0)
                          else:
-                             # Generic status update
-                             # Only update progress if the new generic step is > current
                              if prog < current_pct and prog > 0:
                                  prog = current_pct
                              update_status(task_key, "processing", rest, prog, msg)
