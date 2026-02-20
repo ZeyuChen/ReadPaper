@@ -56,13 +56,96 @@ class TaskStatus(TypedDict):
     progress_percent: int
     details: str
 
-# Global Task Status (In-memory, simpler than DB for now, but not persistent across restarts)
-# Key: arxiv_id (Global? No, should be user-specific to avoid collisions?)
-# actually, task status is ephemeral. We can key by specific task ID or just arxiv_id if we assume one task per paper per user.
-# Let's verify isolation: If User A translates X, and User B translates X.
-# If we key by X, they collide.
-# We should key by `user_id:arxiv_id`.
-TASK_STATUS: Dict[str, TaskStatus] = {}
+# ── Task Status: GCS-backed or in-memory ─────────────────────────────────────
+# In Cloud Run, multiple instances share NO in-memory state.
+# We persist status as a tiny JSON file in GCS: _status/{task_key}.json
+# In local/non-GCS mode we fall back to an in-memory dict.
+_LOCAL_TASK_STATUS: Dict[str, TaskStatus] = {}
+
+
+def _status_key_to_gcs_path(task_key: str) -> str:
+    """GCS object path for the given task_key status file."""
+    # task_key is 'user_id:arxiv_id' — replace ':' so it's a valid GCS name segment
+    safe = task_key.replace(":", "__")
+    return f"_status/{safe}.json"
+
+
+def _read_task_status(task_key: str) -> dict:
+    """Read status from GCS (or in-memory dict)."""
+    if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME:
+        import json
+        from google.cloud import storage as gcs_lib
+        from google.api_core.exceptions import NotFound
+        try:
+            client = gcs_lib.Client()
+            blob = client.bucket(GCS_BUCKET_NAME).blob(_status_key_to_gcs_path(task_key))
+            return json.loads(blob.download_as_text())
+        except NotFound:
+            return {}
+        except Exception as e:
+            logger.warning(f"GCS status read error for {task_key}: {e}")
+            return {}
+    return _LOCAL_TASK_STATUS.get(task_key, {})
+
+
+# Shared thread pool for non-blocking GCS status I/O
+_STATUS_EXECUTOR = None
+_GCS_CLIENT_CACHE = None
+
+
+def _get_gcs_client():
+    global _GCS_CLIENT_CACHE
+    if _GCS_CLIENT_CACHE is None:
+        from google.cloud import storage as gcs_lib
+        _GCS_CLIENT_CACHE = gcs_lib.Client()
+    return _GCS_CLIENT_CACHE
+
+
+def _get_executor():
+    global _STATUS_EXECUTOR
+    if _STATUS_EXECUTOR is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _STATUS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gcs_status")
+    return _STATUS_EXECUTOR
+
+
+def _write_task_status(task_key: str, data: dict) -> None:
+    """Write status to GCS (non-blocking fire-and-forget) or in-memory."""
+    if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME:
+        import json
+
+        def _do_write():
+            try:
+                client = _get_gcs_client()
+                blob = client.bucket(GCS_BUCKET_NAME).blob(_status_key_to_gcs_path(task_key))
+                blob.upload_from_string(json.dumps(data), content_type="application/json")
+            except Exception as e:
+                logger.warning(f"GCS status write error for {task_key}: {e}")
+
+        _get_executor().submit(_do_write)  # fire-and-forget
+    else:
+        _LOCAL_TASK_STATUS[task_key] = data
+
+
+# Compat shim: allow code that reads TASK_STATUS[key] to work transparently
+class _TaskStatusProxy:
+    """A dict-like proxy that persists reads/writes to GCS or memory."""
+    def get(self, key, default=None):
+        result = _read_task_status(key)
+        return result if result else default
+
+    def __getitem__(self, key):
+        return _read_task_status(key)
+
+    def __setitem__(self, key, value):
+        _write_task_status(key, value)
+
+    def __contains__(self, key):
+        return bool(_read_task_status(key))
+
+
+TASK_STATUS = _TaskStatusProxy()
+
 
 # Storage paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -585,7 +668,8 @@ async def get_status(
     user_id: str = Depends(get_current_user)
 ):
     task_key = f"{user_id}:{arxiv_id}"
-    status = TASK_STATUS.get(task_key)
+    # Use asyncio.to_thread so GCS network I/O doesn't block the event loop
+    status = await asyncio.to_thread(_read_task_status, task_key)
     if not status:
         return {"status": "not_found"}
     return status

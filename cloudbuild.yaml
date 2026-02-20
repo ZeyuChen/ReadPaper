@@ -120,6 +120,10 @@ steps:
       - '--allow-unauthenticated'
       - '--memory'
       - '4Gi'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '3'
       - '--set-env-vars'
       - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs,GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID}'
     waitFor: ['Push Backend']
