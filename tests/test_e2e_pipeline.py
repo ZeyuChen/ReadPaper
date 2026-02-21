@@ -56,26 +56,32 @@ class SynchronousFuture:
 @patch("app.backend.arxiv_translator.main.GeminiTranslator")
 @patch("app.backend.arxiv_translator.main.DeepDiveAnalyzer")
 @patch("app.backend.arxiv_translator.main.compile_pdf")
+@patch("app.backend.arxiv_translator.main.compile_with_fix_loop")
 @patch("app.backend.arxiv_translator.main.clean_latex_directory")
 @patch("app.backend.arxiv_translator.main.PaperAnalyzer")
 @patch("concurrent.futures.ProcessPoolExecutor")
 @patch("concurrent.futures.as_completed")
 def test_e2e_pipeline_mocked(
     mock_as_completed, mock_executor, mock_analyzer_cls,
-    mock_clean, mock_compile_pdf,
+    mock_clean, mock_compile_with_fix_loop, mock_compile_pdf,
     mock_deepdive, mock_translator,
     mock_extract, mock_download, mock_workspace
 ):
-    """Verifies the main entry point logic without external calls.
-    
-    NOTE: compile_with_fix_loop has been removed. compile_pdf is now the sole
-    compilation function. It serves both the pre-flight check and the final
-    compilation, so mock_compile_pdf is configured to:
-      - First call (pre-flight): return (True, "")
-      - Second call (final compile): create the dummy PDF and return (True, "")
     """
+    Tests the main() pipeline from start to finish with mostly mocked I/O endpoints.
+    
+    NOTE: compile_pdf is used for pre-flight, and compile_with_fix_loop is used for final compilation.
+    """
+    # ── Override argv ────────────────────────────────────────────────────────
+    sys.argv = [
+        "arxiv-translator",
+        "https://arxiv.org/abs/2401.00000",
+        "--deepdive",
+        "--output", "final.pdf",
+        "--keep",
+    ]
 
-    # ── Executor: run synchronously ──────────────────────────────────────────
+    # ── Mocks Setup ──────────────────────────────────────────────────────────
     mock_executor.side_effect = SynchronousExecutor
 
     def side_effect_as_completed(fs):
@@ -101,15 +107,11 @@ def test_e2e_pipeline_mocked(
     analyzer_instance = mock_analyzer_cls.return_value
     analyzer_instance.analyze.return_value = mock_structure
 
-    # ── compile_pdf: pre-flight (1st call) succeeds; final compile (2nd call)
-    #    creates the dummy PDF and succeeds. ──────────────────────────────────
-    call_count = [0]
+    # ── compile_pdf and compile_with_fix_loop ────────────────────────────────
+    # Pre-flight compile
+    mock_compile_pdf.return_value = (True, "")
 
-    def side_effect_compile_pdf(source_dir, main_tex, **kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # Pre-flight compile — just return success
-            return (True, "")
+    def side_effect_compile_with_fix_loop(source_dir, main_tex, **kwargs):
         # Final compile — create the PDF output so main() can find & copy it
         pdf_path = os.path.join(source_dir, os.path.basename(main_tex).replace(".tex", ".pdf"))
         os.makedirs(source_dir, exist_ok=True)
@@ -117,7 +119,7 @@ def test_e2e_pipeline_mocked(
             f.write("%PDF-1.4 dummy")
         return (True, "")
 
-    mock_compile_pdf.side_effect = side_effect_compile_pdf
+    mock_compile_with_fix_loop.side_effect = side_effect_compile_with_fix_loop
 
     # ── Translator ───────────────────────────────────────────────────────────
     translator_instance = mock_translator.return_value
@@ -137,17 +139,18 @@ def test_e2e_pipeline_mocked(
         "--output", "final.pdf",
         "--keep",
     ]
-
+    
     with patch.object(sys, "argv", test_args):
-        cwd = os.getcwd()
-        os.chdir(mock_workspace)
-        try:
-            main()
-        finally:
-            os.chdir(cwd)
+        main()
 
     # ── Assertions ───────────────────────────────────────────────────────────
     mock_download.assert_called_once()
     mock_clean.assert_called_once()
-    # compile_pdf is now called twice: once for pre-flight, once for final compile
-    assert mock_compile_pdf.call_count >= 2, "compile_pdf should be called for pre-flight + final"
+    assert mock_compile_pdf.call_count == 1, "pre-flight compile_pdf called"
+    assert mock_compile_with_fix_loop.call_count == 1, "final compile_with_fix_loop called"
+
+    assert os.path.exists("final.pdf"), "Final output PDF should have been moved correctly"
+    
+    # Cleanup dummy output
+    if os.path.exists("final.pdf"):
+        os.remove("final.pdf")
