@@ -136,11 +136,13 @@ def compile_pdf(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             timeout=timeout,
         )
 
-        combined_log = result.stdout + "\n" + result.stderr
+        combined_log = (
+            result.stdout.decode('utf-8', errors='replace') + "\n" +
+            result.stderr.decode('utf-8', errors='replace')
+        )
         pdf_name = rel_tex_file.replace(".tex", ".pdf")
 
         if os.path.exists(pdf_name):
