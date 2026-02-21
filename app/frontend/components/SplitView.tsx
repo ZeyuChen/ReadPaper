@@ -6,7 +6,6 @@ import {
     ZoomIn, ZoomOut, SplitSquareHorizontal, RefreshCw,
     FileText, AlignJustify, PenLine, ChevronLeft
 } from 'lucide-react';
-import { useSession } from 'next-auth/react';
 import Image from 'next/image';
 
 const API_BASE = '/backend';
@@ -43,7 +42,6 @@ function AuthenticatedPdfViewer({
     /** Called when the PDF returns a persistent 404/500 — paper needs re-translation */
     onMissing?: () => void;
 }) {
-    const { data: session } = useSession();
     const [blobUrl, setBlobUrl] = useState<string | null>(null);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
@@ -86,12 +84,9 @@ function AuthenticatedPdfViewer({
         const fetchPdf = async (retries = 3) => {
             if (isMounted) { setLoading(true); setError(''); }
             try {
-                const headers: HeadersInit = {};
-                // @ts-ignore
-                if (session?.idToken) { headers['Authorization'] = `Bearer ${session.idToken}`; }
-                else if (process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true') {
-                    headers['Authorization'] = 'Bearer DEV-TOKEN-local-dev-user';
-                }
+                const headers: HeadersInit = {
+                    'Content-Type': 'application/json'
+                };
 
                 const res = await fetch(url, { headers });
                 if (!res.ok) {
@@ -125,7 +120,7 @@ function AuthenticatedPdfViewer({
             isMounted = false;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-    }, [url, session]);
+    }, [url]);
 
     if (loading) return (
         <div className="w-full h-full flex items-center justify-center flex-col gap-3 text-gray-400 bg-gray-50">
@@ -228,7 +223,6 @@ function NotesPanel({ arxivId, onClose }: { arxivId: string; onClose: () => void
 
 // ── Main SplitView ─────────────────────────────────────────────────────────
 export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewProps) {
-    const { data: session } = useSession();
     const [papers, setPapers] = useState<Paper[]>([]);
     const [showSidebar, setShowSidebar] = useState(true);
     const [showNotes, setShowNotes] = useState(false);
@@ -257,13 +251,9 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
     useEffect(() => { fetchLibrary(); }, [arxivId]);
 
     const getAuthHeaders = (): HeadersInit => {
-        const headers: HeadersInit = {};
-        // @ts-ignore
-        if (session?.idToken) { headers['Authorization'] = `Bearer ${session.idToken}`; }
-        else if (process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true') {
-            headers['Authorization'] = 'Bearer DEV-TOKEN-local-dev-user';
-        }
-        return headers;
+        return {
+            'Content-Type': 'application/json'
+        };
     };
 
     const fetchLibrary = async () => {
@@ -395,8 +385,8 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
                                 key={p.id}
                                 onClick={() => onPaperSelect(p.id)}
                                 className={`px-3 py-2.5 rounded-lg cursor-pointer transition-all ${p.id === arxivId
-                                        ? 'bg-[#e8f0fe] text-[#1967d2]'
-                                        : 'text-[#3c4043] hover:bg-[#f1f3f4]'
+                                    ? 'bg-[#e8f0fe] text-[#1967d2]'
+                                    : 'text-[#3c4043] hover:bg-[#f1f3f4]'
                                     }`}
                             >
                                 <div className="text-xs font-medium leading-snug line-clamp-2">{p.title || `arXiv:${p.id}`}</div>
@@ -410,14 +400,10 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
 
                     <div className="p-3 border-t border-[#dadce0] flex-shrink-0">
                         <div className="flex items-center gap-2 px-2">
-                            {session?.user?.image ? (
-                                <Image src={session.user.image} alt="Profile" width={22} height={22} className="rounded-full" />
-                            ) : (
-                                <div className="h-5 w-5 rounded-full bg-[#1a73e8] flex items-center justify-center text-white text-[9px]">
-                                    {(session?.user?.name?.[0] || 'U').toUpperCase()}
-                                </div>
-                            )}
-                            <span className="text-[11px] text-[#5f6368] truncate">{session?.user?.name || 'User'}</span>
+                            <div className="h-5 w-5 rounded-full bg-[#1a73e8] flex items-center justify-center text-white text-[9px]">
+                                A
+                            </div>
+                            <span className="text-[11px] text-[#5f6368] truncate">Anonymous</span>
                         </div>
                     </div>
                 </div>
