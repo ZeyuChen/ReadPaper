@@ -1,6 +1,5 @@
 'use client';
 
-import { useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -32,7 +31,6 @@ type SortKey = 'user_id' | 'id' | 'title';
 type SortDir = 'asc' | 'desc';
 
 export default function AdminPage() {
-    const { data: session, status } = useSession();
     const router = useRouter();
 
     const [papers, setPapers] = useState<AdminPaper[]>([]);
@@ -45,20 +43,12 @@ export default function AdminPage() {
     const [selectedUser, setSelectedUser] = useState<string>('all');
 
     const getAuthHeaders = (): HeadersInit => {
-        const headers: HeadersInit = {};
-        // @ts-ignore
-        if (session?.idToken) headers['Authorization'] = `Bearer ${session.idToken}`;
-        else if (process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true')
-            headers['Authorization'] = 'Bearer DEV-TOKEN-local-dev-user';
-        return headers;
+        return { 'Content-Type': 'application/json' };
     };
 
     useEffect(() => {
-        if (status === 'loading') return;
-        if (status === 'unauthenticated') { router.replace('/'); return; }
-        if (session?.user?.email !== ADMIN_EMAIL) { router.replace('/'); return; }
         fetchData();
-    }, [status, session]);
+    }, []);
 
     const fetchData = async () => {
         setLoading(true);
@@ -103,10 +93,6 @@ export default function AdminPage() {
         ? (sortDir === 'asc' ? <ChevronUp size={12} className="inline ml-0.5" /> : <ChevronDown size={12} className="inline ml-0.5" />)
         : null;
 
-    if (status === 'loading' || (status === 'authenticated' && session?.user?.email !== ADMIN_EMAIL && loading)) {
-        return <div className="h-screen flex items-center justify-center text-gray-400 text-sm">Checking permissions...</div>;
-    }
-
     return (
         <div className="min-h-screen bg-[#f8f9fa] font-sans">
             {/* Header */}
@@ -128,7 +114,7 @@ export default function AdminPage() {
                     <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
                 </button>
                 <span className="text-xs text-[#9aa0a6] bg-blue-50 px-2 py-0.5 rounded-full font-mono">
-                    {session?.user?.email}
+                    Admin (auth disabled)
                 </span>
             </div>
 
@@ -294,8 +280,8 @@ export default function AdminPage() {
                                                 <span
                                                     key={v.model}
                                                     className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${v.status === 'completed'
-                                                            ? 'bg-green-50 text-green-700'
-                                                            : 'bg-yellow-50 text-yellow-700'
+                                                        ? 'bg-green-50 text-green-700'
+                                                        : 'bg-yellow-50 text-yellow-700'
                                                         }`}
                                                 >
                                                     {v.model} · {v.status}
