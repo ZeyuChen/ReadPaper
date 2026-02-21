@@ -141,7 +141,13 @@ def test_e2e_pipeline_mocked(
     ]
     
     with patch.object(sys, "argv", test_args):
-        main()
+        # Must run in the temp dir so work_dir = os.path.abspath("workspace_2401.00000") matches
+        original_cwd = os.getcwd()
+        os.chdir(mock_workspace)
+        try:
+            main()
+        finally:
+            os.chdir(original_cwd)
 
     # ── Assertions ───────────────────────────────────────────────────────────
     mock_download.assert_called_once()
