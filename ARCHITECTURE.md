@@ -1,6 +1,6 @@
 # ReadPaper Architecture & Robustness Pipeline
 
-This document details the technical architecture of ReadPaper, focusing on the sophisticated translation and compilation pipeline. **All AI calls in this project use Gemini 3.0 Flash (`gemini-3-flash-preview`)** — not Gemini 2.0 or 2.5.
+This document details the technical architecture of ReadPaper, focusing on the sophisticated translation and compilation pipeline. **All AI calls in this project use Gemini 3.0 Flash (`gemini-3-flash-preview`)** 
 
 ## System Overview
 

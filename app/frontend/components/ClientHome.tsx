@@ -2,7 +2,6 @@
 
 import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
 import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft, DownloadCloud, Languages, FileCheck2, Check } from 'lucide-react';
 
@@ -121,26 +120,15 @@ export default function ClientHome({ config }: ClientHomeProps) {
         currentPage * ITEMS_PER_PAGE
     );
 
-    const { data: session } = useSession();
-    const isLocalDev = config.disableAuth;
-
     const getAuthHeaders = (): HeadersInit => {
-        const headers: HeadersInit = { 'Content-Type': 'application/json' };
-        if (isLocalDev && !session) {
-            headers['Authorization'] = `Bearer DEV-TOKEN-local-dev-user`;
-            return headers;
-        }
-        // @ts-ignore
-        if (session?.idToken) { headers['Authorization'] = `Bearer ${session.idToken}`; }
-        return headers;
+        return { 'Content-Type': 'application/json' };
     };
 
     useEffect(() => {
-        if (session || isLocalDev) fetchLibrary();
-    }, [arxivId, session, isLocalDev]);
+        fetchLibrary();
+    }, [arxivId]);
 
     const fetchLibrary = async () => {
-        if (!session && !isLocalDev) return;
         try {
             const res = await fetch(`${config.apiUrl}/library`, { headers: getAuthHeaders() });
             if (res.ok) setLibrary(await res.json());
@@ -209,10 +197,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
         setElapsedSeconds(0);
         lastLoggedMsgRef.current = '';
 
-        if (!session && !isLocalDev) {
-            setError("Please sign in to read papers.");
-            return;
-        }
+
 
         setLoading(true);
         setStatusMessage('Starting...');
@@ -402,47 +387,14 @@ export default function ClientHome({ config }: ClientHomeProps) {
     // -- Render --
     return (
         <div className="flex min-h-screen flex-col items-center p-8 bg-gradient-to-br from-slate-50 to-blue-50/30 relative font-sans">
-            {/* Header */}
-            <div className="absolute top-6 right-8 flex items-center gap-4">
-                {!isLocalDev && !session ? (
-                    <button
-                        onClick={() => window.location.href = '/login'}
-                        className="bg-[#1a73e8] hover:bg-[#1557b0] text-white px-6 py-2 rounded-full text-sm font-medium transition-colors shadow-sm"
-                    >
-                        Sign In
-                    </button>
-                ) : (
-                    <div className="flex items-center gap-3">
-                        {/* Admin link — only visible to super admin */}
-                        {session?.user?.email === 'chinachenzeyu@gmail.com' && (
-                            <a
-                                href="/admin"
-                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#1a73e8] bg-blue-50 hover:bg-blue-100 rounded-full transition-colors border border-blue-100"
-                                title="Admin Dashboard"
-                            >
-                                <Shield size={12} /> Admin
-                            </a>
-                        )}
-                        <div className="flex flex-col items-end mr-1">
-                            <span className="text-xs font-medium text-gray-700">{session?.user?.name || 'Local Dev'}</span>
-                            <span className="text-[10px] text-gray-500">{session?.user?.email}</span>
-                        </div>
-                        <button onClick={() => signOut()} className="relative group focus:outline-none" title="Sign Out">
-                            {session?.user?.image ? (
-                                <div className="h-9 w-9 rounded-full overflow-hidden border border-gray-200 hover:shadow-md transition-shadow">
-                                    <Image src={session.user.image} alt="Profile" width={36} height={36} />
-                                </div>
-                            ) : (
-                                <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
-                                    {(session?.user?.name?.[0] || 'U').toUpperCase()}
-                                </div>
-                            )}
-                            <div className="absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 border border-gray-100 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <LogOut size={10} className="text-gray-600" />
-                            </div>
-                        </button>
-                    </div>
-                )}
+            <div className="absolute top-6 right-8 flex items-center gap-3">
+                <div className="flex flex-col items-end mr-1">
+                    <span className="text-xs font-medium text-gray-700">Anonymous</span>
+                    <span className="text-[10px] text-gray-500">auth disabled</span>
+                </div>
+                <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
+                    A
+                </div>
             </div>
 
             <div className="w-full max-w-3xl mt-16 space-y-8 text-center">
@@ -861,36 +813,19 @@ export default function ClientHome({ config }: ClientHomeProps) {
                     )}
                 </div>
 
-                {/* Auth notice */}
-                {!isLocalDev && !session && (
-                    <p className="text-sm text-gray-500 pb-4">
-                        Note: You need to <button onClick={() => window.location.href = '/login'} className="text-blue-600 hover:underline">sign in</button> to read papers and save them to your library.
-                    </p>
-                )}
             </div>
-        </div>
+        </div >
     );
 }
 
 // ── TaskMonitor (unchanged) ─────────────────────────────────────────────────
 function TaskMonitor({ config }: ClientHomeProps) {
     const [tasks, setTasks] = useState<any[]>([]);
-    const { data: session } = useSession();
-    const isLocalDev = config.disableAuth;
 
     useEffect(() => {
         const fetchTasks = async () => {
             try {
-                const headers: HeadersInit = {};
-                // @ts-ignore
-                if (session?.idToken) {
-                    // @ts-ignore
-                    headers['Authorization'] = `Bearer ${session.idToken}`;
-                } else if (isLocalDev) {
-                    headers['Authorization'] = 'Bearer DEV-TOKEN-local-dev-user';
-                } else {
-                    return;
-                }
+                const headers: HeadersInit = { 'Content-Type': 'application/json' };
                 const res = await fetch(`${config.apiUrl}/tasks`, { headers });
                 if (res.ok) setTasks(await res.json());
             } catch (e) { console.error("Failed to fetch tasks", e); }
@@ -899,7 +834,7 @@ function TaskMonitor({ config }: ClientHomeProps) {
         fetchTasks();
         const interval = setInterval(fetchTasks, 3000);
         return () => clearInterval(interval);
-    }, [session, isLocalDev, config.apiUrl]);
+    }, [config.apiUrl]);
 
     if (tasks.length === 0) return null;
 
