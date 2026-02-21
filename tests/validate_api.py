@@ -82,7 +82,7 @@ def run_case(case):
             print(f"\n  ✅ COMPLETED in {elapsed}s")
             return True
         elif st == "failed":
-            error_msg = data.get("message", data.get("compile_log", ""))[:300]
+            error_msg = data.get("message", data.get("compile_log", ""))
             print(f"\n  ❌ FAILED: {error_msg}")
             return False
 

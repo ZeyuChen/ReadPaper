@@ -495,7 +495,7 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         if return_code != 0:
             # Use collected stderr lines for a meaningful error message
             err_snippet = "\n".join(stderr_lines[-20:]) if stderr_lines else "(no stderr output)"
-            err_preview = err_snippet[:500]
+            err_preview = err_snippet[:2000]
             update_status(task_key, "failed", f"Translator process exited with code {return_code}.\n{err_preview}")
             return
 
