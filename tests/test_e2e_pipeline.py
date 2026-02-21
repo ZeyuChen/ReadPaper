@@ -155,8 +155,9 @@ def test_e2e_pipeline_mocked(
     assert mock_compile_pdf.call_count == 1, "pre-flight compile_pdf called"
     assert mock_compile_with_fix_loop.call_count == 1, "final compile_with_fix_loop called"
 
-    assert os.path.exists("final.pdf"), "Final output PDF should have been moved correctly"
+    final_pdf_path = os.path.join(mock_workspace, "final.pdf")
+    assert os.path.exists(final_pdf_path), "Final output PDF should have been moved correctly"
     
     # Cleanup dummy output
-    if os.path.exists("final.pdf"):
-        os.remove("final.pdf")
+    if os.path.exists(final_pdf_path):
+        os.remove(final_pdf_path)
