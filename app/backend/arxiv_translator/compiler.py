@@ -217,11 +217,16 @@ def compile_pdf(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             timeout=timeout,
         )
 
-        combined_log = result.stdout + "\n" + result.stderr
+        # Decode manually with errors='replace' — pdflatex output can contain
+        # non-UTF-8 bytes (CJK font references, binary encoding markers) that
+        # would cause UnicodeDecodeError if decoded with text=True.
+        combined_log = (
+            result.stdout.decode('utf-8', errors='replace') + "\n" +
+            result.stderr.decode('utf-8', errors='replace')
+        )
 
         pdf_name = rel_tex_file.replace(".tex", ".pdf")
         if os.path.exists(pdf_name):
