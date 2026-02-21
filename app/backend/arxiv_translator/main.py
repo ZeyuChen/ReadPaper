@@ -19,7 +19,7 @@ from .text_extractor import LatexTextExtractor
 from .translator import GeminiTranslator
 from .downloader import download_source
 from .extractor import extract_source
-from .compiler import compile_pdf
+from .compiler import compile_with_fix_loop
 from .config import ConfigManager
 from .deepdive import DeepDiveAnalyzer
 from .logging_utils import logger, log_ipc
@@ -288,9 +288,11 @@ def main():
         suffix = "_zh_deepdive" if args.deepdive else "_zh"
         final_pdf = args.output or f"{arxiv_id}{suffix}.pdf"
 
-        success, compile_error = compile_pdf(
-            source_zh_dir,
-            main_tex,
+        success, compile_error = compile_with_fix_loop(
+            source_dir=source_zh_dir,
+            main_tex=main_tex,
+            api_key=api_key,
+            model_name=model_name,
             timeout=200,
         )
 
