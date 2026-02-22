@@ -257,6 +257,9 @@ def update_status(task_key: str, status: str, message: str = "", progress: int =
         # Preserve per-file status across status updates
         "files": current.get("files", {}),
         "compile_log": current.get("compile_log", ""),
+        # Preserve token counts across status updates
+        "total_in_tokens": current.get("total_in_tokens", 0),
+        "total_out_tokens": current.get("total_out_tokens", 0),
     }
 
 
