@@ -381,7 +381,8 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                 # Cap in-memory collection to last 200 lines
                 if len(stderr_lines) > 200:
                     stderr_lines.pop(0)
-                logger.debug(f"[translator] {line_text}")
+                # Elevate to INFO so translation errors are visible in Cloud Run logs
+                logger.info(f"[STDERR] {line_text}")
 
         stderr_task = asyncio.create_task(drain_stderr())
 
@@ -576,7 +577,19 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
              # every .tex file to GCS at {arxiv_id}/tex/original/ and
              # {arxiv_id}/tex/translated/ so the frontend can preview them
              # via the /paper/{arxiv_id}/texfile endpoint.
+             #
+             # The subprocess creates workspace_<full_arxiv_id> which may include
+             # a version suffix (e.g., workspace_2602.04705v1) while the backend
+             # only has the base ID (2602.04705). Search dynamically.
              workspace_dir_tex = os.path.join(work_root, f"workspace_{arxiv_id}")
+             if not os.path.exists(workspace_dir_tex):
+                 # Try to find the actual workspace dir (handles version suffix mismatch)
+                 for entry in os.listdir(work_root):
+                     full = os.path.join(work_root, entry)
+                     if os.path.isdir(full) and entry.startswith(f"workspace_{arxiv_id}"):
+                         workspace_dir_tex = full
+                         logger.info(f"Found workspace with version suffix: {entry}")
+                         break
              logger.info(f"Looking for tex files in workspace: {workspace_dir_tex}")
              logger.info(f"workspace exists: {os.path.exists(workspace_dir_tex)}")
              if os.path.exists(workspace_dir_tex):

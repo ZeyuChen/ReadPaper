@@ -28,7 +28,7 @@ from .text_extractor import TextNode, split_into_paragraphs
 
 _MAX_BATCH_CONCURRENCY = int(os.getenv("MAX_BATCH_CONCURRENCY", "4"))
 _DEFAULT_CHUNK_CHARS = int(os.getenv("TRANSLATION_CHUNK_CHARS", "8000"))
-_MAX_RETRIES = 3
+_MAX_RETRIES = 5
 
 
 # ── Validation helpers ────────────────────────────────────────────────────────
@@ -58,7 +58,9 @@ def _validate_translation(original: str, translated: str) -> bool:
     if _has_markdown_fences(translated):
         return False
     ratio = len(translated) / max(len(original), 1)
-    if ratio < 0.1 or ratio > 5.0:
+    # CJK translations can be much shorter (compact characters) or longer
+    # (explicit parenthetical terms). Use generous bounds.
+    if ratio < 0.05 or ratio > 8.0:
         logger.warning(f"Translation length ratio out of range: {ratio:.2f}")
         return False
     return True
