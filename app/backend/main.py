@@ -143,6 +143,13 @@ class _TaskStatusProxy:
     def __contains__(self, key):
         return bool(_read_task_status(key))
 
+    def items(self):
+        """Return (key, value) pairs from in-memory status (local mode only)."""
+        return _LOCAL_TASK_STATUS.items()
+
+    def keys(self):
+        return _LOCAL_TASK_STATUS.keys()
+
 
 TASK_STATUS = _TaskStatusProxy()
 
@@ -228,11 +235,20 @@ class TranslationRequest(BaseModel):
     deepdive: bool = False
 
 def update_status(task_key: str, status: str, message: str = "", progress: int = 0, details: str = ""):
-    logger.info(f"[{task_key}] {status}: {message} ({progress}%)")
     current = TASK_STATUS.get(task_key, {})
-    # Preserve progress if not provided and status is processing
-    if progress == 0 and status == "processing" and "progress_percent" in current:
-        progress = current["progress_percent"]
+    current_pct = current.get("progress_percent", 0)
+
+    # ── Strict monotonic progress (high-water-mark) ─────────────────────
+    # During "processing", progress must NEVER decrease.
+    # If caller passes 0, inherit the current value.
+    # If caller passes a non-zero value lower than current, clamp to current.
+    if status == "processing":
+        if progress == 0:
+            progress = current_pct
+        else:
+            progress = max(progress, current_pct)
+
+    logger.info(f"[{task_key}] {status}: {message} ({progress}%)")
 
     TASK_STATUS[task_key] = {
         "status": status,
@@ -376,11 +392,11 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             "PRE_FLIGHT":  (12, "Running pre-flight checks..."),
             "TRANSLATING": (15, "Translating..."),
             "ANALYZING":   (15, "Analyzing (DeepDive)..."),
-            "POST_PROCESSING": (85, "Cleaning up LaTeX..."),
-            "COMPILING":   (90, "Compiling final PDF (pdfLaTeX)..."),
+            "POST_PROCESSING": (86, "Cleaning up LaTeX..."),
+            "COMPILING":   (92, "Compiling final PDF (pdfLaTeX)..."),
             "COMPLETED":   (100, "Done"),
             "COMPLETED_WITH_WARNINGS": (100, "Done (with warnings)"),
-            "WARN":  (85, "Warning"),
+            "WARN":  (0, "Warning"),
             "FAILED": (0, "Failed"),
         }
 
@@ -417,26 +433,50 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                             "done" if outcome.strip() == "ok" else "failed"
                         )
 
-                # ── Fine-grained batch progress ────────────────────────────
+                # ── Fine-grained batch progress (message only, NOT %) ─────
                 elif code == "BATCH_PROGRESS":
                     try:
                         bp_parts = rest.split(":", 2)
                         if len(bp_parts) >= 3:
                             b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
                             update_file_status(task_key, fname, "translating", b_done, b_total)
-                            if b_total > 0:
-                                new_pct = 15 + int((b_done / b_total) * 70)
-                                pct = max(new_pct, current_pct)
-                            else:
-                                pct = current_pct
+                            # Only update the message, NOT the percentage.
+                            # The percentage is driven by file-level TRANSLATING events.
                             update_status(task_key, "processing",
-                                          f"Translating {fname} — batch {b_done}/{b_total}", pct)
+                                          f"Translating {fname} — batch {b_done}/{b_total}", current_pct)
                     except Exception:
                         update_status(task_key, "processing", "Translating...", current_pct)
 
                 # ── Heartbeat ──────────────────────────────────────────────
                 elif code == "HEARTBEAT":
-                    update_status(task_key, "processing", "Translating... ⚙", current_pct)
+                    msg = rest.strip() if rest.strip() else "Translating... ⚙"
+                    update_status(task_key, "processing", msg, current_pct)
+
+                # ── Per-file token summary ─────────────────────────────────
+                elif code == "TOKENS_TOTAL":
+                    # Format: TOKENS_TOTAL:{in}:{out}:{filename}
+                    try:
+                        tp = rest.split(":", 2)
+                        in_t, out_t = int(tp[0]), int(tp[1])
+                        fname_t = tp[2] if len(tp) > 2 else ""
+                        current_state = TASK_STATUS.get(task_key, {})
+                        prev_in = current_state.get("total_in_tokens", 0)
+                        prev_out = current_state.get("total_out_tokens", 0)
+                        new_in = prev_in + in_t
+                        new_out = prev_out + out_t
+                        TASK_STATUS[task_key] = {
+                            **current_state,
+                            "total_in_tokens": new_in,
+                            "total_out_tokens": new_out,
+                        }
+                        tok_msg = (
+                            f"✅ {fname_t} done | "
+                            f"Gemini In: {new_in:,} / Out: {new_out:,} tokens total"
+                        )
+                        update_status(task_key, "processing", tok_msg, current_pct)
+                        logger.info(f"[tokens] {fname_t}: in={in_t} out={out_t} | total in={new_in} out={new_out}")
+                    except Exception:
+                        pass
 
                 # ── File-level TRANSLATING:count:total:message ─────────────
                 elif code == "TRANSLATING":
@@ -537,18 +577,28 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
              # {arxiv_id}/tex/translated/ so the frontend can preview them
              # via the /paper/{arxiv_id}/texfile endpoint.
              workspace_dir_tex = os.path.join(work_root, f"workspace_{arxiv_id}")
+             logger.info(f"Looking for tex files in workspace: {workspace_dir_tex}")
+             logger.info(f"workspace exists: {os.path.exists(workspace_dir_tex)}")
+             if os.path.exists(workspace_dir_tex):
+                 logger.info(f"workspace contents: {os.listdir(workspace_dir_tex)}")
+             tex_upload_count = 0
              for tex_variant, subdir in (("original", "source"), ("translated", "source_zh")):
                  tex_dir = os.path.join(workspace_dir_tex, subdir)
+                 logger.info(f"Checking tex dir: {tex_dir} exists={os.path.isdir(tex_dir)}")
                  if os.path.isdir(tex_dir):
                      for root_d, _, files in os.walk(tex_dir):
                          for fname in files:
                              if fname.endswith(".tex"):
                                  local_tex = os.path.join(root_d, fname)
-                                 gcs_key = f"{arxiv_id}/tex/{tex_variant}/{fname}"
+                                 # Use relative path from tex_dir to preserve subdirectory structure
+                                 rel_path = os.path.relpath(local_tex, tex_dir)
+                                 gcs_key = f"{arxiv_id}/tex/{tex_variant}/{rel_path}"
                                  try:
                                      await storage_service.upload_file(local_tex, gcs_key)
+                                     tex_upload_count += 1
                                  except Exception as tex_e:
                                      logger.warning(f"tex upload failed: {gcs_key}: {tex_e}")
+             logger.info(f"Uploaded {tex_upload_count} tex files total")
 
              # Update Library
              meta = fetch_arxiv_metadata(arxiv_id)
@@ -643,7 +693,9 @@ async def translate_paper(
     library_manager: LibraryManager = Depends(get_library_manager)
 ):
     parts = request.arxiv_url.split("/")
-    arxiv_id = parts[-1].replace(".pdf", "")
+    # Strip .pdf extension and version suffix (e.g. 2602.15763v1 → 2602.15763)
+    import re as _re
+    arxiv_id = _re.sub(r'v\d+$', '', parts[-1].replace(".pdf", ""))
     
     # Check Library
     paper = await library_manager.get_paper(arxiv_id)

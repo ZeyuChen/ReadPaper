@@ -10,54 +10,111 @@ def clean_latex_content(content: str) -> str:
     Handles:
     1. 'comment' environment blocks: \\begin{comment} ... \\end{comment}
     2. Lines starting with % (ignoring whitespace)
+    3. Inline % comments (preserving \\% escapes)
+
+    Inspired by MathTranslate's remove_tex_comments() — correctly handles
+    \\\\  (literal backslash) and \\% (escaped percent) before stripping.
     """
-    # Strategy: Split content into chunks: (is_verbatim, text)
-    # Then only clean text where is_verbatim is False.
-    
-    # 1. Regex to find verbatim blocks
-    # Supporting standard `verbatim` and `verbatim*`. Also `lstlisting` if common? 
-    # Let's start with `verbatim` and `verbatim*`.
-    verbatim_pattern = re.compile(r'(\\begin\{verbatim\*?\}.*?\\end\{verbatim\*?\})', flags=re.DOTALL)
-    
-    parts = verbatim_pattern.split(content)
-    # split returns [pre, match, post, match, post...]
-    # Even indices are non-verbatim (safe to clean), Odd indices are verbatim blocks (keep as is).
-    
-    processed_parts = []
-    
-    for i, part in enumerate(parts):
-        if i % 2 == 1:
-            # This is a verbatim block, keep as is
-            processed_parts.append(part)
+    original = content
+
+    # 1. Remove 'comment' environments
+    comment_env_pattern = re.compile(
+        r'\\begin\{comment\}.*?\\end\{comment\}',
+        re.DOTALL
+    )
+    content = comment_env_pattern.sub('', content)
+
+    # 2. Smart comment removal (ported from MathTranslate)
+    #    Temporarily encode \\\\ and \\% to prevent false matches.
+    _MATH_CODE = "ZZLATEXGUARD"
+    content = content.replace('\\\\', f'{_MATH_CODE}_BSLASH')
+    content = content.replace('\\%', f'{_MATH_CODE}_PCNT')
+
+    # Remove full-line comments (lines starting with %)
+    content = re.sub(r'\n\s*%.*?(?=\n)', '', content)
+    # Remove trailing inline comments (% to end of line)
+    content = re.sub(r'%.*?(?=\n)', '', content)
+
+    # Restore encoded chars
+    content = content.replace(f'{_MATH_CODE}_PCNT', '\\%')
+    content = content.replace(f'{_MATH_CODE}_BSLASH', '\\\\')
+
+    if content != original:
+        removed_lines = original.count('\n') - content.count('\n')
+        logger.info(f"Cleaned {removed_lines} comment lines")
+
+    return content
+
+
+def expand_newcommands(content: str) -> str:
+    """
+    Expand user-defined \\newcommand / \\def macros that wrap translation-sensitive
+    environments (equation, align, theorem, itemize, etc.).
+
+    Ported from MathTranslate's process_newcommands(): when a \\newcommand body
+    contains environments that need to be recognized by the text extractor, the
+    macro is expanded inline so the extractor can properly classify skip regions.
+
+    Only expands macros containing sensitive keywords; leaves others untouched.
+    """
+    # Sensitive keywords that trigger expansion
+    sensitive_keywords = [
+        'equation', 'align', 'gather', 'multline', 'array',
+        'theorem', 'lemma', 'proof', 'corollary', 'proposition',
+        'itemize', 'enumerate', 'description',
+        'figure', 'table', 'tabular',
+        'displaymath', 'eqnarray', 'cases',
+        'textcolor', 'textbf', 'emph',
+        'section', 'subsection', 'subsubsection',
+        'caption', 'footnote',
+    ]
+
+    # Pattern: \newcommand{\name}[n_args]{body} or \newcommand{\name}{body}
+    newcmd_pattern = re.compile(
+        r'\\(?:newcommand|renewcommand)\s*\{\\([a-zA-Z]+)\}\s*(?:\[(\d+)\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}',
+        re.DOTALL
+    )
+
+    matches = list(newcmd_pattern.finditer(content))
+    expanded_count = 0
+
+    for match in matches:
+        name = match.group(1)
+        n_args_str = match.group(2)
+        body = match.group(3)
+
+        # Only expand if body contains sensitive keywords
+        should_expand = any(kw in body for kw in sensitive_keywords)
+        if not should_expand:
+            continue
+
+        n_args = int(n_args_str) if n_args_str else 0
+
+        # Build replacement pattern for \name{arg1}{arg2}...
+        if n_args == 0:
+            # Simple: replace \name (not followed by letter) with body
+            usage_pattern = re.compile(r'\\' + re.escape(name) + r'(?![a-zA-Z])')
+            content = usage_pattern.sub(body, content)
         else:
-            # This is normal LaTeX, clean it
-            
-            # A. Remove comment environment blocks (re-applied here on safe chunks)
-            # regex for \begin{comment} ... \end{comment}
-            part = re.sub(r'\\begin\{comment\}.*?\\end\{comment\}(?:\r?\n)?', '', part, flags=re.DOTALL)
-            
-            # B. Remove lines starting with %
-            lines = part.splitlines(keepends=True) # Keep ends to preserve structure better
-            cleaned_lines = []
-            for line in lines:
-                if not line.strip().startswith('%'):
-                    cleaned_lines.append(line)
-            
-            cleaned_part = ''.join(cleaned_lines)
-            processed_parts.append(cleaned_part)
-            
-    result = ''.join(processed_parts)
-    
-    # 3. Collapse multiple blank lines (max 2)
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    
-    # 4. Fix potential environment Imbalance (caused by chunked translation)
-    result = fix_latex_imbalance(result)
-    
-    # 5. Fix known packaging conflicts (e.g. booktabs vs colortbl)
-    result = fix_package_conflicts(result)
-    
-    return result
+            # With args: replace \name{...}{...} with body substituting #1, #2, etc.
+            arg_pattern = r'\\' + re.escape(name)
+            for i in range(n_args):
+                arg_pattern += r'\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
+            usage_regex = re.compile(arg_pattern, re.DOTALL)
+
+            def make_replacement(m, _body=body, _n=n_args):
+                result = _body
+                for i in range(_n):
+                    result = result.replace(f'#{i+1}', m.group(i + 1))
+                return result
+
+            content = usage_regex.sub(make_replacement, content)
+        expanded_count += 1
+
+    if expanded_count > 0:
+        logger.info(f"Expanded {expanded_count} \\newcommand definitions containing sensitive environments")
+
+    return content
 
 def fix_package_conflicts(content: str) -> str:
     """
@@ -183,8 +240,9 @@ def clean_latex_file(file_path: str) -> bool:
             content = f.read()
             
         cleaned = clean_latex_content(content)
+        cleaned = expand_newcommands(cleaned)
         
-        if len(cleaned) < len(content):
+        if len(cleaned) < len(content) or cleaned != content:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(cleaned)
             return True

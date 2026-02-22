@@ -60,11 +60,27 @@ _MATH_ENVS = [
     'filecontents', 'filecontents*',  # sometimes used to embed .bib inline
 ]
 
-# Build one big alternation pattern for \begin{...}...\end{...} blocks
-_ENV_PATTERN = re.compile(
-    r'\\begin\{(' + '|'.join(re.escape(e) for e in _MATH_ENVS) + r')\}.*?\\end\{\1\}',
-    re.DOTALL
-)
+
+def _detect_newtheorem_envs(content: str) -> list[str]:
+    """Scan the preamble for \\newtheorem{name} declarations (ported from MathTranslate).
+    Returns a list of user-defined theorem environment names."""
+    pattern = re.compile(r'\\newtheorem\s*\{(.+?)\}')
+    return [m.group(1) for m in pattern.finditer(content)]
+
+
+def _build_env_pattern(extra_envs: list[str] | None = None) -> re.Pattern:
+    """Build the environment skip pattern, optionally including extra environments."""
+    envs = list(_MATH_ENVS)
+    if extra_envs:
+        envs.extend(extra_envs)
+    return re.compile(
+        r'\\begin\{(' + '|'.join(re.escape(e) for e in envs) + r')\}.*?\\end\{\1\}',
+        re.DOTALL
+    )
+
+
+# Default pattern (without dynamic theorem envs)
+_ENV_PATTERN = _build_env_pattern()
 
 # Inline math: $...$ and $$...$$
 # Be careful not to match escaped \$ — covered by the negative lookbehind
@@ -108,6 +124,26 @@ _URL = re.compile(r'\\(?:url|href)\s*\{[^}]*\}(?:\s*\{[^}]*\})?')
 # by the text extractor (text inside \caption{} is prose)
 
 
+def is_complete_latex(content: str) -> bool:
+    """Check if content is a complete LaTeX document (ported from MathTranslate).
+    Returns True if it has \\documentclass, \\begin{document}, and \\end{document}
+    in the correct order."""
+    dc_pat = re.compile(r'\\document(?:class|style)(?:\[.*?\])?\{.*?\}', re.DOTALL)
+    begin_pat = re.compile(r'\\begin\{document\}')
+    end_pat = re.compile(r'\\end\{document\}')
+
+    dc_match = dc_pat.search(content)
+    if not dc_match:
+        return False
+    begin_match = begin_pat.search(content)
+    if not begin_match:
+        return False
+    end_match = end_pat.search(content)
+    if not end_match:
+        return False
+    return dc_match.end() <= begin_match.start() < end_match.start()
+
+
 class LatexTextExtractor:
     """
     Walks a LaTeX document and extracts TextNode spans of pure prose.
@@ -116,6 +152,10 @@ class LatexTextExtractor:
     1. Mark all "skip" regions (math, commands with args, preamble, etc.)
     2. Everything NOT in a skip region and not a LaTeX command is a text node
     3. Text nodes shorter than 5 chars or containing no letters are ignored
+
+    Enhanced with MathTranslate techniques:
+    - Auto-detects \\newtheorem environments and adds them to skip patterns
+    - Validates LaTeX document completeness
     """
 
     MIN_TEXT_LEN = 10  # Minimum characters to bother translating
@@ -126,6 +166,11 @@ class LatexTextExtractor:
           - nodes: list of TextNode to translate
           - skip_spans: list of (start, end) that must be preserved verbatim
         """
+        # Detect user-defined theorem environments from preamble
+        self._extra_envs = _detect_newtheorem_envs(content)
+        if self._extra_envs:
+            logger.info(f"Detected {len(self._extra_envs)} custom theorem envs: {self._extra_envs}")
+
         skip_spans = self._compute_skip_spans(content)
         nodes = self._extract_text_nodes(content, skip_spans)
         logger.debug(f"Text extractor: {len(nodes)} text nodes, {len(skip_spans)} skip spans")
@@ -181,8 +226,9 @@ class LatexTextExtractor:
             # Include \begin{document} itself in the skip
             spans.append((0, m.end()))
 
-        # 1. Named math/verbatim/algorithm environments
-        for m in _ENV_PATTERN.finditer(content):
+        # 1. Named math/verbatim/algorithm environments (includes auto-detected theorems)
+        env_pattern = _build_env_pattern(getattr(self, '_extra_envs', None)) if getattr(self, '_extra_envs', None) else _ENV_PATTERN
+        for m in env_pattern.finditer(content):
             spans.append((m.start(), m.end()))
 
         # 2. Inline math $...$ $$...$$

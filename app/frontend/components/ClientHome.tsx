@@ -266,7 +266,8 @@ export default function ClientHome({ config }: ClientHomeProps) {
                         addLog(statusData.message, statusData.progress_percent ?? 0);
                     }
                     if (typeof statusData.progress_percent === 'number') {
-                        setProgress(statusData.progress_percent);
+                        // Monotonic: never decrease progress (protects against out-of-order GCS reads)
+                        setProgress(prev => Math.max(prev, statusData.progress_percent));
                     }
                     if (statusData.files && typeof statusData.files === 'object') {
                         setTranslationFiles(statusData.files);
