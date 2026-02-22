@@ -747,6 +747,12 @@ async def translate_paper(
         return {"message": "Already completed", "arxiv_id": arxiv_id, "status": "completed"}
     
     task_key = f"{user_id}:{arxiv_id}"
+
+    # Guard against concurrent translations of the same paper
+    existing = TASK_STATUS.get(task_key, {})
+    if existing.get("status") in ("processing", "queued"):
+        return {"message": "Already in progress", "arxiv_id": arxiv_id, "status": existing.get("status")}
+
     update_status(task_key, "queued", "Started")
     
     background_tasks.add_task(
