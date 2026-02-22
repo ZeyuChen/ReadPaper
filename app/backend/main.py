@@ -232,7 +232,6 @@ def fetch_arxiv_metadata(arxiv_id: str):
 class TranslationRequest(BaseModel):
     arxiv_url: str
     model: str = "flash"
-    deepdive: bool = False
 
 def update_status(task_key: str, status: str, message: str = "", progress: int = 0, details: str = ""):
     current = TASK_STATUS.get(task_key, {})
@@ -275,7 +274,7 @@ def update_file_status(task_key: str, filename: str, file_status: str,
     files[filename] = entry
     TASK_STATUS[task_key] = {**current, "files": files}
 
-async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool, user_id: str, storage_service: StorageService, library_manager: LibraryManager):
+async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user_id: str, storage_service: StorageService, library_manager: LibraryManager):
     """
     Executes the translation pipeline in a background task.
     
@@ -292,7 +291,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
         arxiv_url: The full URL of the arXiv paper.
         model: The Gemini model to use (e.g., 'flash', 'pro').
         arxiv_id: The extracted arXiv ID.
-        deepdive: Whether to enable DeepDive analysis.
         user_id: The ID of the requesting user.
         storage_service: The user-scoped storage service.
         library_manager: The user-scoped library manager.
@@ -345,9 +343,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             "--model", model
         ]
         
-        if deepdive:
-            cmd.append("--deepdive")
-        
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         if IS_CLOUD_RUN:
@@ -392,7 +387,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             "EXTRACTING":  (8,  "Extracting source files..."),
             "PRE_FLIGHT":  (12, "Running pre-flight checks..."),
             "TRANSLATING": (15, "Translating..."),
-            "ANALYZING":   (15, "Analyzing (DeepDive)..."),
             "POST_PROCESSING": (86, "Cleaning up LaTeX..."),
             "COMPILING":   (92, "Compiling final PDF (pdfLaTeX)..."),
             "COMPLETED":   (100, "Done"),
@@ -475,19 +469,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                     except Exception:
                         update_status(task_key, "processing", f"Translating: {rest}", current_pct)
 
-                # ── DeepDive ANALYZING:count:total:message ─────────────────
-                elif code == "ANALYZING":
-                    try:
-                        p_parts = rest.split(":", 2)
-                        if len(p_parts) >= 3:
-                            count, total = int(p_parts[0]), int(p_parts[1])
-                            msg = p_parts[2]
-                            pct = max(15 + int((count / total) * 15), current_pct) if total > 0 else current_pct
-                            update_status(task_key, "processing", f"DeepDive: {msg}", pct)
-                        else:
-                            update_status(task_key, "processing", f"DeepDive: {rest}", current_pct)
-                    except Exception:
-                        update_status(task_key, "processing", f"DeepDive: {rest}", current_pct)
 
                 # ── Standard status_map codes ──────────────────────────────
                 elif code in status_map:
@@ -649,8 +630,8 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             except:
                 pass
 
-async def run_translation_wrapper(arxiv_url: str, model: str, arxiv_id: str, deepdive: bool, user_id: str, storage: StorageService, lib: LibraryManager):
-    await run_translation_stream(arxiv_url, model, arxiv_id, deepdive, user_id, storage, lib)
+async def run_translation_wrapper(arxiv_url: str, model: str, arxiv_id: str, user_id: str, storage: StorageService, lib: LibraryManager):
+    await run_translation_stream(arxiv_url, model, arxiv_id, user_id, storage, lib)
 
 @app.get("/library")
 async def get_library(library_manager: LibraryManager = Depends(get_library_manager)):
@@ -754,7 +735,7 @@ async def translate_paper(
     
     background_tasks.add_task(
         run_translation_wrapper, 
-        request.arxiv_url, request.model, arxiv_id, request.deepdive,
+        request.arxiv_url, request.model, arxiv_id,
         user_id, storage_service, library_manager
     )
     

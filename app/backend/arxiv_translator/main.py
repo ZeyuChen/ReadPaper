@@ -90,7 +90,6 @@ def main():
     parser.add_argument("--model", default="gemini-3-flash-preview", help="Gemini model")
     parser.add_argument("--output", "-o", help="Custom output path for translated PDF")
     parser.add_argument("--keep", action="store_true", help="Keep intermediate files")
-    parser.add_argument("--deepdive", action="store_true", help="Enable AI DeepDive analysis")
 
     args = parser.parse_args()
 
@@ -208,8 +207,7 @@ def main():
         # ── Compile PDF ───────────────────────────────────────────────────
         log_ipc(f"PROGRESS:COMPILING:Compiling PDF (pdfLaTeX)...")
 
-        suffix = "_zh_deepdive" if args.deepdive else "_zh"
-        final_pdf = args.output or f"{arxiv_id}{suffix}.pdf"
+        final_pdf = args.output or f"{arxiv_id}_zh.pdf"
 
         success, compile_error = compile_with_fix_loop(
             source_dir=source_zh_dir,

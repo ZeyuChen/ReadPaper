@@ -47,7 +47,6 @@ export default function ClientHome({ config }: ClientHomeProps) {
     // ID of the paper whose delete button is in the "confirm" state
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [library, setLibrary] = useState<any[]>([]);
-    const [useDeepDive, setUseDeepDive] = useState(false);
 
     // Per-file translation status (populated from status.files)
     const [translationFiles, setTranslationFiles] = useState<Record<string, FileStatus>>({});
@@ -233,7 +232,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
             const response = await fetch(`${config.apiUrl}/translate`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
-                body: JSON.stringify({ arxiv_url: targetUrl, model: 'flash', deepdive: useDeepDive }),
+                body: JSON.stringify({ arxiv_url: targetUrl, model: 'flash' }),
             });
 
             if (!response.ok) {
@@ -510,20 +509,7 @@ export default function ClientHome({ config }: ClientHomeProps) {
                         </button>
                     </div>
 
-                    {/* Deep Dive Toggle */}
-                    <div className="flex items-center justify-center gap-2 mt-4">
-                        <input
-                            type="checkbox"
-                            id="deepdive-toggle"
-                            checked={useDeepDive}
-                            onChange={(e) => setUseDeepDive(e.target.checked)}
-                            className="w-4 h-4 accent-blue-600 cursor-pointer"
-                            disabled={loading}
-                        />
-                        <label htmlFor="deepdive-toggle" className="text-sm text-[#5f6368] cursor-pointer select-none flex items-center gap-1">
-                            <Sparkles size={13} className="text-blue-400" /> Enable Deep Dive (AI Analysis)
-                        </label>
-                    </div>
+
                 </form>
 
                 {/* Error Banner */}
