@@ -215,10 +215,16 @@ export default function ClientHome({ config }: ClientHomeProps) {
             }
         };
 
-        // Deduplicated addLog: only append if message changed
+        // Deduplicated addLog: only append if meaningful content changed
+        // Strip volatile parts (token counts) for comparison so heartbeats
+        // with same batch counts but different cumulative tokens are not duped.
         const addLog = (msg: string, pct: number) => {
-            if (msg === lastLoggedMsgRef.current) return;
-            lastLoggedMsgRef.current = msg;
+            // Extract the "stable" part of the message for dedup comparison
+            // e.g. "Translating appendix.tex... 3/12 batches | In 6,842/Out 5,277 tokens"
+            //   -> key: "Translating appendix.tex... 3/12 batches"
+            const stableKey = msg.split(' | ')[0].trim();
+            if (stableKey === lastLoggedMsgRef.current) return;
+            lastLoggedMsgRef.current = stableKey;
             const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setProgressLog(prev => [...prev.slice(-49), { time, message: msg, pct }]);
         };

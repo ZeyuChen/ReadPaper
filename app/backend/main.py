@@ -401,6 +401,9 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             "FAILED": (0, "Failed"),
         }
 
+        # Track last heartbeat message to avoid flooding the frontend with duplicates
+        last_heartbeat_msg = ""
+
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
@@ -451,7 +454,10 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                 # ── Heartbeat ──────────────────────────────────────────────
                 elif code == "HEARTBEAT":
                     msg = rest.strip() if rest.strip() else "Translating... ⚙"
-                    update_status(task_key, "processing", msg, current_pct)
+                    # Only update status if the message actually changed
+                    if msg != last_heartbeat_msg:
+                        last_heartbeat_msg = msg
+                        update_status(task_key, "processing", msg, current_pct)
 
                 # ── Per-file token summary ─────────────────────────────────
                 elif code == "TOKENS_TOTAL":
@@ -527,6 +533,36 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                 else:
                     # Unknown code — surface the raw message
                     update_status(task_key, "processing", rest, current_pct)
+
+                # ── Early upload of original tex files after EXTRACTING ────
+                # This lets the frontend preview original .tex files even while
+                # translation is still running.
+                if code == "EXTRACTING" and "Analyzing" in rest:
+                    # Extraction just finished — upload source/ tex files now
+                    ws_candidates = [os.path.join(work_root, f"workspace_{arxiv_id}")]
+                    # Also try versioned workspace dirs
+                    if os.path.isdir(work_root):
+                        for entry in os.listdir(work_root):
+                            if entry.startswith(f"workspace_{arxiv_id}") and os.path.isdir(os.path.join(work_root, entry)):
+                                ws_candidates.append(os.path.join(work_root, entry))
+                    for ws_dir in ws_candidates:
+                        source_dir = os.path.join(ws_dir, "source")
+                        if os.path.isdir(source_dir):
+                            upload_count = 0
+                            for root_d, _, files_list in os.walk(source_dir):
+                                for fname in files_list:
+                                    if fname.endswith(".tex"):
+                                        local_tex = os.path.join(root_d, fname)
+                                        rel_path = os.path.relpath(local_tex, source_dir)
+                                        gcs_key = f"{arxiv_id}/tex/original/{rel_path}"
+                                        try:
+                                            await storage_service.upload_file(local_tex, gcs_key)
+                                            upload_count += 1
+                                        except Exception as tex_e:
+                                            logger.warning(f"Early tex upload failed: {gcs_key}: {tex_e}")
+                            if upload_count > 0:
+                                logger.info(f"Early-uploaded {upload_count} original tex files")
+                            break  # Found the workspace, stop searching
 
         # Wait for stderr drainer to finish
         await stderr_task
