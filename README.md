@@ -12,166 +12,91 @@
 ![GCP](https://img.shields.io/badge/Google_Cloud-Ready-4285F4.svg)
 ![Model](https://img.shields.io/badge/Gemini-3.0_Flash-blue?logo=google)
 
-**ReadPaper** is an open-source tool that revolutionizes how you read academic papers. It automates the translation of technical arXiv papers from English to Chinese while **preserving the original LaTeX layout**, citations, equations, and bibliography references.
-
-It leverages **[Gemini 3.0 Flash](https://deepmind.google/technologies/gemini/flash/)** (`gemini-3-flash-preview`) for high-fidelity, high-speed translation and the optional **AI DeepDive** feature to inject expert insights directly into the document, creating a truly bilingual reading experience.
+**ReadPaper** is an open-source tool that translates arXiv papers from English to Chinese while **preserving the original LaTeX layout**, equations, citations, figures, and tables. It leverages **Gemini 3.0 Flash** with its 1M context window for whole-file translation.
 
 > [!IMPORTANT]
-> This project uses the **Gemini 3.0 Flash API** (`gemini-3-flash-preview`) exclusively — not Gemini 2.0 or 2.5. All translation, DeepDive analysis, and error-fix loops route through the same model.
-
-The project is designed for cloud-native deployment on **Google Cloud Run**, utilizing **Cloud Storage (GCS)** for scalable artifact management.
+> This project uses **Gemini 3.0 Flash** (`gemini-3-flash-preview`) exclusively. Each `.tex` file is translated in a single API call — no chunking, no batching, no text-node extraction.
 
 ## 🚀 Key Features
 
-- **Text-Node Translation (v2)**: The LLM only ever sees pure English prose — never raw LaTeX commands. This eliminates structural corruption and citation loss.
-- **Citation & Bibliography Preservation**: The entire `\begin{thebibliography}` section, `.bib` files, and all `\cite{}`, `\ref{}`, `\label{}` commands are always skipped — references remain untouched.
-- **AI DeepDive Analysis**: Injects styled explanation boxes (blue-bordered, small font) directly into the PDF after dense technical paragraphs for guided reading.
-- **4-Phase Robust Pipeline**:
-  1. **Structural Analysis** (`analyzer.py`) — classifies files, builds `\input` dependency graph, identifies the main `.tex` entrypoint recursively.
-  2. **Text-Node Extraction + Translation** (`text_extractor.py` + `translator.py`) — extracts pure prose spans using a state-machine; LLM receives only human-readable text. Macro/style/bibliography files are never translated.
-  3. **Post-Processing** (`post_process.py`) — injects `ctex`, `xcolor` packages; renames conflicting macros; deduplicates labels cross-file.
-  4. **Compile + AI Fix Loop** (`compiler.py`) — up to 3 iterative compile attempts; each failure triggers targeted AI repair of the failing file before retrying.
-- **Partial Translation Warnings**: When API failures leave text in English, a warning comment is injected into the source and the frontend progress bar shows a yellow indicator.
-- **Split-View Interface**: Next.js frontend for side-by-side bilingual reading.
-- **Cloud Scale**: Google Cloud Run + GCS with direct blob streaming (no signed-URL dependency).
-- **Local Ready**: `run_conda_local.sh` or `docker-compose` for local development.
-
-## ⚙️ Dual-Mode Configuration
-
-A template is provided in `.env.example`.
-
-### Mode 1: Local Development
-
-```bash
-cp .env.example .env
-# Set:
-#   GEMINI_API_KEY=<your key>
-#   STORAGE_TYPE=local        # saves to ./paper_storage
-#   DISABLE_AUTH=true         # skips Google Login
-```
-
-### Mode 2: Cloud Deployment (Google Cloud Run)
-
-```bash
-# Required Cloud Run env vars:
-#   STORAGE_TYPE=gcs
-#   GCS_BUCKET_NAME=<your bucket>
-#   GEMINI_API_KEY=<your key>
-#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  (OAuth)
-#   NEXTAUTH_SECRET   (frontend)
-```
+- **Whole-File Translation**: Each `.tex` file is sent to Gemini as-is (complete LaTeX source), translated to Chinese in one API call. No text extraction, no batching, no reassembly corruption.
+- **CJK-Ready Output**: Translation prompt instructs Gemini to add `\usepackage[UTF8]{ctex}` and preserve all LaTeX commands.
+- **Smart Structure Analysis** (`analyzer.py`): Classifies files as main/sub/macro/style, builds `\input` dependency graph, identifies the main `.tex` entrypoint.
+- **AI Compile Fix Loop** (`compiler.py`): Up to 3 iterative compile attempts with Gemini-powered error fixing. Parses error log → fixes the offending file → retries.
+- **Dynamic Compile Timeout**: Base 300s + 60s per 10k output tokens, capped at 1200s. Adapts to paper size automatically.
+- **Token Usage Tracking**: Real-time Gemini API token usage displayed in frontend during translation.
+- **Cloud Scale**: Google Cloud Run + GCS with direct blob streaming.
+- **Split-View Reader**: Side-by-side bilingual PDF viewing in Next.js frontend.
 
 ## 🏗️ Architecture
 
 ```
 User → Next.js Frontend → FastAPI Backend
                                 ↓
-                    ┌─── Translation Pipeline ───────────────────────┐
-                    │                                                   │
-                    │  Phase 0: PaperAnalyzer                          │
-                    │     └─ Classify files (main/sub/macro/style)     │
-                    │                                                   │
-                    │  Phase 1+2: Text-Node Translation                │
-                    │     ├─ LatexTextExtractor: extract prose spans   │
-                    │     ├─ GeminiTranslator:   translate prose only  │
-                    │     └─ Reintegrate at original char offsets      │
-                    │                                                   │
-                    │  Phase 3 (optional): AI DeepDive                 │
-                    │     └─ Inject styled explanation boxes           │
-                    │                                                   │
-                    │  Phase 4: Post-Process → Compile + Fix Loop      │
-                    │     ├─ Inject ctex, xcolor packages              │
-                    │     └─ Up to 3 AI-driven compile fix attempts    │
-                    └───────────────────────────────────────────────────┘
+                    ┌─── Translation Pipeline ──────────────────┐
+                    │                                            │
+                    │  Step 1: Download + Extract Source          │
+                    │     └─ arXiv e-print → tar.gz → workspace │
+                    │                                            │
+                    │  Step 2: PaperAnalyzer                     │
+                    │     └─ Classify files, find main .tex      │
+                    │                                            │
+                    │  Step 3: Whole-File Translation             │
+                    │     └─ Each .tex → Gemini API → Chinese    │
+                    │     └─ asyncio.gather() for concurrency    │
+                    │                                            │
+                    │  Step 4: Compile + AI Fix Loop              │
+                    │     └─ latexmk -xelatex (up to 3 tries)   │
+                    │     └─ Gemini fixes errors between retries │
+                    └────────────────────────────────────────────┘
                                 ↓
-                     GCS / Local Storage → PDF served via StreamingResponse
+                     GCS / Local Storage → PDF via StreamingResponse
 ```
 
-## 🧠 Translation Pipeline — Deep Dive
+## 🧠 How Translation Works
 
-### Why Text-Node Translation?
+### Whole-File Approach
 
-Previous approaches sent raw LaTeX to the LLM, which frequently:
-- Corrupted `\begin{...}` / `\end{...}` structure
-- Changed citation keys inside `\cite{}`
-- Translated bibliography entries (breaking reference formatting)
+Each `.tex` file is translated in a **single Gemini API call** with the full file content as input. The prompt instructs the model to:
+1. Translate all human-readable English text to Chinese
+2. Preserve all LaTeX commands, environments, labels, citations, and math exactly
+3. Add `\usepackage[UTF8]{ctex}` to the main document if not present
+4. Keep the file structure byte-compatible (same number of environments, same nesting)
 
-**The text-node approach** extracts only pure English prose segments (skipping all math, commands, environments, preamble, and bibliography blocks) and sends those to the LLM. The LLM never sees LaTeX structure, so structural corruption is **impossible by design**.
+This avoids all the problems of text extraction + reassembly: no offset drift, no broken environments, no missing citations.
 
-### What Is Never Translated
+### Concurrency
 
-| Skipped Content | Why |
-|---|---|
-| `\begin{thebibliography}...\end{thebibliography}` | Entire references section preserved |
-| `.bib` files | Only formatting fixes applied |
-| `\cite{}`, `\ref{}`, `\label{}`, `\eqref{}` | Keys must stay intact |
-| Preamble (before `\begin{document}`) | Package options must not change |
-| Math (`$...$`, `\begin{equation}`, ...) | Formulas must stay in English |
-| Macro / style / standalone files | Classified and skipped by PaperAnalyzer |
-| `\begin{algorithm}`, `\begin{verbatim}`, ... | Code/pseudocode stays literal |
+Translation uses `asyncio.gather()` with a `Semaphore` to process multiple `.tex` files in parallel (default concurrency: 4). Files are translated independently, then the whole project is compiled as a unit.
 
-### Failure Handling
+### Compile + AI Fix Loop
 
-If Gemini API calls fail (network/quota), the affected text nodes fall back to **original English**. The pipeline:
-1. Injects a `% ⚠ TRANSLATION WARNING: N segment(s)...` comment in the LaTeX source
-2. Emits `PROGRESS:WARN:...` to the progress stream — frontend shows a yellow indicator
-3. Emits `PROGRESS:COMPLETED_WITH_WARNINGS:...` at completion instead of the normal green
+After translation, the project is compiled with `latexmk -xelatex`:
+1. On failure, the error log is parsed to identify the failing file and error type
+2. Gemini is asked to fix the specific file
+3. Compilation is retried (up to 3 attempts)
 
-### AI DeepDive
+## ⚙️ Configuration
 
-Styled explanation block injected after dense paragraphs:
-```latex
-{\par\smallskip\noindent\fbox{\begin{minipage}{0.93\linewidth}
-\textcolor{blue!70!black}{\small\textbf{[AI DeepDive] Concept}}\\
-\textcolor{blue!50!black}{\small\textbf{解释：} explanation in Chinese}\\
-\textcolor{blue!50!black}{\small\textit{为什么重要：} why it matters}
-\end{minipage}}\par\smallskip}
-```
-Uses only `xcolor` (always injected) — no `tcolorbox` dependency to avoid package clashes.
+### Environment Variables
 
-## 📋 Prerequisites
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | ✅ | Gemini API key from [AI Studio](https://aistudio.google.com/) |
+| `STORAGE_TYPE` | No | `local` (default) or `gcs` |
+| `GCS_BUCKET_NAME` | For GCS | GCS bucket name |
+| `MAX_CONCURRENT_REQUESTS` | No | Concurrent Gemini API calls (default: 4) |
+| `DISABLE_AUTH` | No | Set `true` for local dev (skips OAuth) |
 
-- **Python 3.11+**
-- **Node.js 18+**
-- **TeX Live** (with `latexmk`, `xelatex`, `fandol` fonts) — or Docker (used as fallback)
-- **Google Cloud SDK** (for GCP deployment)
-- **Gemini API Key** from [Google AI Studio](https://aistudio.google.com/)
-  - Model used: **`gemini-3-flash-preview`** (Gemini 3.0 Flash) — set `GEMINI_API_KEY` in `.env`
-
-## 🛠️ Usage
-
-### CLI Translation
+### Local Development
 
 ```bash
-# Basic translation
-python -m app.backend.arxiv_translator.main https://arxiv.org/abs/2502.12345
-
-# With AI DeepDive analysis
-python -m app.backend.arxiv_translator.main https://arxiv.org/abs/2502.12345 --deepdive
-
-# Use a specific model
-python -m app.backend.arxiv_translator.main 2502.12345 --model gemini-2.0-pro
+cp .env.example .env
+# Set GEMINI_API_KEY and DISABLE_AUTH=true
+./run_conda_local.sh
 ```
 
-### Web Interface
-
-1. Navigate to the web UI and sign in.
-2. Enter an arXiv URL or ID in the search box.
-3. Optionally enable **DeepDive Analysis**.
-4. Click **Translate** and monitor the live progress bar.
-5. Once complete, the Split-View reader opens automatically.
-
-## 🛠️ Deployment
-
-### Local Deployment
-
-```bash
-./run_conda_local.sh        # starts backend + frontend locally
-```
-
-See [deployment.md](./deployment.md) for detailed steps.
-
-### Cloud Build (CI/CD)
+### Cloud Deployment
 
 ```bash
 gcloud builds submit \
@@ -179,36 +104,46 @@ gcloud builds submit \
   --substitutions=_GEMINI_API_KEY=...,_GOOGLE_CLIENT_ID=...,_GOOGLE_CLIENT_SECRET=...
 ```
 
-The `cloudbuild.yaml` builds both Docker images, pushes to Artifact Registry, and deploys to Cloud Run.
-
 ## 📦 Project Structure
 
 ```
 ├── app/
 │   ├── backend/
-│   │   ├── arxiv_translator/       # Core 4-phase translation pipeline
-│   │   │   ├── analyzer.py         # Phase 0: file classification & dependency graph
-│   │   │   ├── text_extractor.py   # Phase 1: prose text-node extraction (FSM)
-│   │   │   ├── translator.py       # Phase 2: Gemini text-node translation
-│   │   │   ├── deepdive.py         # Phase 2b (optional): AI insight injection
-│   │   │   ├── post_process.py     # Phase 3: ctex/xcolor injection & label fixes
-│   │   │   ├── compiler.py         # Phase 4: compile + AI error-fix loop
+│   │   ├── arxiv_translator/       # Core translation pipeline
 │   │   │   ├── main.py             # Pipeline orchestrator (CLI entry point)
-│   │   │   ├── extractor.py        # Source archive extraction
-│   │   │   ├── downloader.py       # arXiv source download
-│   │   │   ├── latex_rescuer.py    # Last-resort rescue compilation
-│   │   │   └── prompts/            # LLM prompt templates
+│   │   │   ├── translator.py       # Gemini whole-file translation
+│   │   │   ├── analyzer.py         # File classification & dependency graph
+│   │   │   ├── compiler.py         # Compile + AI error-fix loop
+│   │   │   ├── downloader.py       # arXiv source download + extraction
+│   │   │   ├── latex_cleaner.py    # Pre-translation LaTeX cleanup
+│   │   │   ├── logging_utils.py    # Structured logging
+│   │   │   └── prompts/
+│   │   │       ├── whole_file_translation_prompt.txt
+│   │   │       └── latex_fix_prompt.txt
 │   │   ├── services/
-│   │   │   ├── auth.py             # Google OAuth token verification
-│   │   │   ├── storage.py          # LocalStorage / GCS storage abstraction
-│   │   │   └── library.py          # User paper library management
-│   │   ├── main.py                 # FastAPI app: REST endpoints + IPC stream handler
+│   │   │   ├── auth.py             # Google OAuth verification
+│   │   │   ├── storage.py          # Local / GCS storage abstraction
+│   │   │   └── library.py          # User paper library
+│   │   ├── main.py                 # FastAPI REST API + IPC handler
 │   │   └── Dockerfile
 │   ├── frontend/
+│   │   ├── components/
+│   │   │   └── ClientHome.tsx      # Main UI with progress + token display
 │   │   └── Dockerfile
-├── cloudbuild.yaml
-└── deployment.md
+├── tests/
+│   └── test_e2e_pipeline.py        # Mocked E2E test
+├── cloudbuild.yaml                 # Full stack CI/CD
+└── cloudbuild-hotfix.yaml          # Backend-only hotfix deploy
 ```
+
+## 📊 Token Usage
+
+ReadPaper tracks and displays Gemini API token usage in real-time:
+- **During translation**: Live token counter shown next to elapsed timer
+- **Per-file tracking**: Each file's input/output tokens are reported via IPC
+- **Final summary**: Total tokens displayed when translation completes
+
+Hover the token counter for a breakdown of input vs output tokens.
 
 ## 🤝 Contributing
 

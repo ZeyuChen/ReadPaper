@@ -1,77 +1,121 @@
-# ReadPaper Architecture & Robustness Pipeline
+# ReadPaper Architecture
 
-This document details the technical architecture of ReadPaper, focusing on the sophisticated translation and compilation pipeline. **All AI calls in this project use Gemini 3.0 Flash (`gemini-3-flash-preview`)** 
+All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`).
 
 ## System Overview
 
-ReadPaper consists of two main services:
-1.  **Frontend (Next.js)**: Handles user interaction, PDF rendering, and side-by-side view.
-2.  **Backend (FastAPI)**: Manages the heavy lifting of downloading, analyzing, translating, and compiling papers.
+ReadPaper consists of two services deployed on Google Cloud Run:
 
-## The Translation Pipeline (Robust Mode)
+1. **Frontend (Next.js)** — User interface: paper search, translation trigger, progress display with token usage, split-view PDF reader.
+2. **Backend (FastAPI)** — Translation pipeline: arXiv download, analysis, Gemini translation, XeLaTeX compilation. IPC-based progress streaming.
 
-The core innovation of ReadPaper is its "Robustness Pipeline 2.0", designed to ensure a readable PDF is produced even when the AI generates imperfect LaTeX or when the source material is fragile.
+## Translation Pipeline
 
 ```mermaid
 graph TD
-    A[Start: arXiv URL] --> B[Download Source & Extract]
-    B --> C[DeepDive Analysis]
-    C --> D[Smart Chunking]
-    D --> E[Gemini 3.0 Flash Translation]
-    E --> F[Compile PDF]
+    A[arXiv URL] --> B[Download Source .tar.gz]
+    B --> C[Extract to workspace]
+    C --> D[PaperAnalyzer: classify files]
+    D --> E[Copy to source_zh/]
+    E --> F["Clean LaTeX comments"]
+    F --> G["Translate .tex files (asyncio.gather)"]
+    G --> H["Compile with latexmk -xelatex"]
     
-    subgraph "Robustness Layer"
-    F -- Success --> G[Final PDF]
-    F -- Fail --> H[Rescue Mode]
-    H --> I{Rescue Strategy}
-    I -- Strategy 1 --> J[Inject Safe Preamble]
-    I -- Strategy 2 --> K[Strip Complex Environments]
-    J --> L[Re-Compile]
-    K --> L
-    L -- Success --> G
-    L -- Fail --> M[Error Report]
+    subgraph "Compile Fix Loop (up to 3 tries)"
+    H -- Success --> I[Final PDF ✅]
+    H -- Fail --> J[Parse error log]
+    J --> K[Gemini fixes offending file]
+    K --> H
     end
+    
+    H -- 3 failures --> L[Error Report ❌]
 ```
 
-### 1. DeepDive Analysis
-Before translation, the `DeepDiveAnalyzer` scans the paper for technical concepts (equations, theorems, architectures). It uses a specialized prompt to generate "Insight Cards" which are then injected into the translation stream.
+### Step 1: Download + Extract
 
-### 2. Smart Chunking (Paragraph-Aware)
-Standard line-based chunking often breaks LaTeX environments (e.g., splitting a `\begin{equation}` block).
--   **Old Logic**: Split every N lines.
--   **New Logic**: Splits only on paragraph boundaries (empty lines) or when a hard token limit is reached, preserving the structural integrity of LaTeX blocks.
+`downloader.py` downloads the arXiv e-print tarball and `extract_source()` handles tar.gz, gzipped single-file, and plain-text archives.
 
-### 3. Gemini 3.0 Flash Translation
+### Step 2: PaperAnalyzer
 
-All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`) exclusively:
+`analyzer.py` classifies every file in the workspace:
 
-| Operation | Model | Purpose |
+| Classification | Description | Action |
 |---|---|---|
-| Text-node translation | `gemini-3-flash-preview` | Translate prose-only text batches to Chinese |
-| DeepDive analysis | `gemini-3-flash-preview` | Generate explanation boxes after dense paragraphs |
-| Compile error fixing | `gemini-3-flash-preview` | Parse LaTeX error logs and apply targeted fixes |
+| `main` | The main `.tex` file (contains `\documentclass`) | Translate |
+| `sub_content` | Input/included files with translatable prose | Translate |
+| `macro` / `style` | Package/macro definition files | Skip |
+| `bib` | Bibliography files | Skip |
+| `non_tex` | Images, data files, etc. | Skip |
 
-> **Why Gemini 3.0 Flash?** The large context window handles full-document batches without chunking overhead, while the Flash tier provides the speed needed for sub-5-minute end-to-end translation of typical papers.
+### Step 3: Whole-File Translation
 
-The system uses a strict `text_only_translation_prompt.txt` system prompt instructing the model to output **only** the Chinese translation — no LaTeX commands, no markdown, no preamble.
+Each translatable `.tex` file is sent to Gemini in a **single API call**:
 
-### 4. Robust Compilation
-We use `latexmk` with a specifically tuned configuration:
--   `-interaction=nonstopmode`: Prevents the compiler from hanging on user input.
--   `-f` (Force): Compels the engine to produce a PDF even if non-critical errors (like missing fonts or minor syntax issues) are encountered.
+- **Prompt**: `whole_file_translation_prompt.txt` — instructs Gemini to translate English text, preserve all LaTeX structure, and add CJK support
+- **Concurrency**: `asyncio.gather()` with `Semaphore(MAX_CONCURRENT_REQUESTS)` (default: 4)
+- **Retry**: 3 attempts with exponential backoff per file
+- **Validation**: Output must be non-empty and >20 characters
 
-### 5. Rescue Mode (LatexRescuer)
-If the standard compilation fails, the **LatexRescuer** intervenes. It does **not** rely on AI (which can hallucinate fixes). Instead, it uses deterministic rules:
--   **Safe Preamble**: Replaces the original (often fragile) preamble with a standardized `ctex`-compatible version.
--   **Environment Stripping**: If the first rescue fails, it strips out complex environments like `figure`, `table`, and `algorithm`, leaving the core text and equations intact.
+| What Gets Translated | What Stays Untouched |
+|---|---|
+| Prose text (paragraphs, section titles) | `\cite{}`, `\ref{}`, `\label{}` |
+| Comments in English | Math (`$...$`, `\begin{equation}`) |
+| Caption text | LaTeX commands and environments |
+| Abstract, introduction, etc. | Preamble package options |
 
-## Local Development (Conda)
+### Step 4: AI Compile Fix Loop
 
-For local development, we provide `run_conda_local.sh`, which:
--   Loads environment variables from `.env`.
--   Starts the Backend on port 8000.
--   Starts the Frontend on port 3000.
--   Manages process lifecycles (cleanup on exit).
+`compiler.py` runs `latexmk -xelatex` with flags:
+- `-interaction=nonstopmode` — no user input prompts
+- `-f` — force PDF generation despite non-critical errors
+- `-file-line-error` — machine-parseable error locations
 
-### Requirements
--   **TeX Live**: Required for local compilation. If `latexmk` is missing, the backend attempts to use Docker (`ghcr.io/xu-cheng/texlive-full`), but this is slower.
+On failure:
+1. `parse_latex_error()` extracts the failing file + line + error type
+2. `ai_fix_file()` sends the file + error snippet to Gemini with `latex_fix_prompt.txt`
+3. Compilation is retried (up to 3 attempts)
+
+**Dynamic Timeout**: `300s + (total_output_tokens / 10000) * 60s`, capped at 1200s.
+
+## IPC Protocol
+
+The subprocess (`arxiv_translator/main.py`) communicates with the backend (`main.py`) via stdout IPC messages:
+
+| Code | Format | Description |
+|---|---|---|
+| `DOWNLOADING` | — | Source download started |
+| `EXTRACTING` | — | Archive extraction started |
+| `PRE_FLIGHT` | — | Pre-flight checks (analysis, cleanup) |
+| `FILE_LIST` | `file1,file2,...` | List of files to translate |
+| `TRANSLATING` | `count:total:message` | Per-file translation progress |
+| `FILE_DONE` | `filename:ok/fail` | File translation complete |
+| `TOKENS_TOTAL` | `in:out:filename` | Per-file token usage |
+| `TOKENS_SUMMARY` | `total_in:total_out` | Final total token counts |
+| `COMPILING` | `message` | PDF compilation started |
+| `COMPLETED` | `message` | Success |
+| `FAILED` | `message` | Error |
+
+## Storage
+
+Two backends via `StorageService`:
+- **Local**: Files on disk at `./paper_storage/`
+- **GCS**: Google Cloud Storage with bucket prefix per user
+
+Stored per paper:
+- `original.pdf` — Original English PDF
+- `translated.pdf` — Translated Chinese PDF
+- `tex/original/` — Original `.tex` source files
+- `tex/translated/` — Translated `.tex` source files
+- `status.json` — Cached translation status
+
+## Local Development
+
+```bash
+cp .env.example .env
+# Set GEMINI_API_KEY, DISABLE_AUTH=true
+./run_conda_local.sh
+```
+
+Requirements:
+- **TeX Live** with `latexmk`, `xelatex`, and `fandol` fonts
+- Fallback: Docker with `ghcr.io/xu-cheng/texlive-full`
