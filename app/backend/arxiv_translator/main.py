@@ -19,7 +19,6 @@ import sys
 
 from .analyzer import PaperAnalyzer
 from .compiler import compile_with_fix_loop
-from .config_manager import ConfigManager
 from .downloader import download_source, extract_source
 from .logging_utils import logger, log_ipc
 from .translator import GeminiTranslator
@@ -94,18 +93,17 @@ def main():
     parser.add_argument("--deepdive", action="store_true", help="Enable AI DeepDive analysis")
 
     args = parser.parse_args()
-    config_manager = ConfigManager()
 
     if args.set_key:
-        config_manager.set_api_key(args.set_key)
+        print("API key management: use GEMINI_API_KEY environment variable.")
         sys.exit(0)
 
     if not args.arxiv_url:
         parser.print_help()
         sys.exit(1)
 
-    # Resolve API key
-    api_key = os.getenv("GEMINI_API_KEY") or config_manager.get_api_key()
+    # Resolve API key from environment (set by parent process)
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         logger.error("Gemini API key not found. Set GEMINI_API_KEY or run --set-key.")
         sys.exit(1)
