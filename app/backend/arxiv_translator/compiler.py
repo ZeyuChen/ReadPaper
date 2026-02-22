@@ -319,13 +319,6 @@ def compile_with_fix_loop(
             logger.warning("AI fix produced no changes; stopping fix loop.")
             break
 
-    # All attempts failed — try LatexRescuer as last resort
-    logger.warning("All compile attempts failed. Trying LatexRescuer...")
-    from .latex_rescuer import LatexRescuer
-    rescuer = LatexRescuer(source_dir, main_tex)
-    if rescuer.rescue():
-        logger.info("LatexRescuer succeeded.")
-        return True, "rescued"
-    else:
-        logger.error("LatexRescuer also failed.")
-        return False, last_log
+    # All attempts failed
+    logger.error("All compile attempts failed.")
+    return False, last_log

@@ -204,8 +204,17 @@ def main():
         logger.info(f"Translation complete — In: {total_in:,} / Out: {total_out:,} tokens total")
         logger.info(f"Failed files: {len(failed_files)}/{total_files}")
 
+        # Emit final token summary for backend status persistence
+        log_ipc(f"PROGRESS:TOKENS_SUMMARY:{total_in}:{total_out}")
+
         # ── Compile PDF ───────────────────────────────────────────────────
-        log_ipc(f"PROGRESS:COMPILING:Compiling PDF (pdfLaTeX)...")
+        # Dynamic timeout: base 300s + 60s per 10k output tokens
+        # (large CJK papers with many figures/tables need much more time)
+        compile_timeout = 300 + int((total_out / 10000) * 60)
+        compile_timeout = max(compile_timeout, 300)  # minimum 300s
+        compile_timeout = min(compile_timeout, 1200)  # cap at 20 minutes
+        logger.info(f"Compile timeout: {compile_timeout}s (based on {total_out:,} output tokens)")
+        log_ipc(f"PROGRESS:COMPILING:Compiling PDF (timeout {compile_timeout}s)...")
 
         final_pdf = args.output or f"{arxiv_id}_zh.pdf"
 
@@ -214,7 +223,7 @@ def main():
             main_tex=main_tex,
             api_key=api_key,
             model_name=model_name,
-            timeout=600,
+            timeout=compile_timeout,
         )
 
         # Locate the compiled PDF

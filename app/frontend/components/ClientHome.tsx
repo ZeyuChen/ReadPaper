@@ -52,6 +52,9 @@ export default function ClientHome({ config }: ClientHomeProps) {
     const [translationFiles, setTranslationFiles] = useState<Record<string, FileStatus>>({});
     // Compile error log (populated from status.compile_log on failure)
     const [compileLog, setCompileLog] = useState('');
+    // Token usage tracking
+    const [totalInTokens, setTotalInTokens] = useState(0);
+    const [totalOutTokens, setTotalOutTokens] = useState(0);
 
     // LaTeX preview sidebar
     const [previewFile, setPreviewFile] = useState<string | null>(null);
@@ -194,6 +197,8 @@ export default function ClientHome({ config }: ClientHomeProps) {
         setStatusMessage('');
         setProgressLog([]);
         setElapsedSeconds(0);
+        setTotalInTokens(0);
+        setTotalOutTokens(0);
         lastLoggedMsgRef.current = '';
 
 
@@ -279,6 +284,13 @@ export default function ClientHome({ config }: ClientHomeProps) {
                     }
                     if (statusData.compile_log) {
                         setCompileLog(statusData.compile_log);
+                    }
+                    // Token usage
+                    if (typeof statusData.total_in_tokens === 'number') {
+                        setTotalInTokens(statusData.total_in_tokens);
+                    }
+                    if (typeof statusData.total_out_tokens === 'number') {
+                        setTotalOutTokens(statusData.total_out_tokens);
                     }
 
                     if (statusData.status === 'completed') {
@@ -567,6 +579,11 @@ export default function ClientHome({ config }: ClientHomeProps) {
                                     {elapsedSeconds > 0 && (
                                         <span className="text-[10px] text-gray-400 tabular-nums font-mono">
                                             {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')} elapsed
+                                        </span>
+                                    )}
+                                    {(totalInTokens > 0 || totalOutTokens > 0) && (
+                                        <span className="text-[10px] text-indigo-400 tabular-nums font-mono" title={`Input: ${totalInTokens.toLocaleString()} / Output: ${totalOutTokens.toLocaleString()}`}>
+                                            🔤 {((totalInTokens + totalOutTokens) / 1000).toFixed(1)}k tokens
                                         </span>
                                     )}
                                     <span className="text-xs font-semibold text-blue-600 tabular-nums">{progress}%</span>

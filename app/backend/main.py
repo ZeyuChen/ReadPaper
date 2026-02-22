@@ -455,6 +455,22 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user
                     except Exception:
                         pass
 
+                # ── Final total tokens summary ─────────────────────────────
+                elif code == "TOKENS_SUMMARY":
+                    # Format: TOKENS_SUMMARY:{total_in}:{total_out}
+                    try:
+                        tp = rest.split(":", 1)
+                        total_in, total_out = int(tp[0]), int(tp[1])
+                        current_state = TASK_STATUS.get(task_key, {})
+                        TASK_STATUS[task_key] = {
+                            **current_state,
+                            "total_in_tokens": total_in,
+                            "total_out_tokens": total_out,
+                        }
+                        logger.info(f"[tokens-summary] Final totals: in={total_in:,} out={total_out:,}")
+                    except Exception:
+                        pass
+
                 # ── File-level TRANSLATING:count:total:message ─────────────
                 elif code == "TRANSLATING":
                     try:
