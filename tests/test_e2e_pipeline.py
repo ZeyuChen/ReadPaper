@@ -152,7 +152,7 @@ def test_e2e_pipeline_mocked(
     # ── Assertions ───────────────────────────────────────────────────────────
     mock_download.assert_called_once()
     mock_clean.assert_called_once()
-    assert mock_compile_pdf.call_count == 1, "pre-flight compile_pdf called"
+    assert mock_compile_pdf.call_count == 0, "pre-flight compile_pdf should NOT be called (removed from pipeline)"
     assert mock_compile_with_fix_loop.call_count == 1, "final compile_with_fix_loop called"
 
     final_pdf_path = os.path.join(mock_workspace, "final.pdf")
