@@ -1,0 +1,60 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  entrypoint: 'bash'
+  args: ['-c', 'docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest || true']
+  id: 'Pull Cache'
+
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - 'build'
+    - '-t'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:hotfix'
+    - '-t'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest'
+    - '--cache-from'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest'
+    - '--build-arg'
+    - 'BASE_IMAGE=${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-texlive-base:latest'
+    - '-f'
+    - 'app/backend/Dockerfile'
+    - '.'
+  waitFor: ['Pull Cache']
+  id: 'Build Backend'
+
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:hotfix']
+  waitFor: ['Build Backend']
+  id: 'Push Hotfix'
+
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:latest']
+  waitFor: ['Build Backend']
+  id: 'Push Latest'
+
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'deploy'
+    - 'readpaper-backend'
+    - '--image'
+    - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/readpaper-repo/readpaper-backend:hotfix'
+    - '--region'
+    - '${_REGION}'
+    - '--platform'
+    - 'managed'
+    - '--allow-unauthenticated'
+    - '--memory'
+    - '4Gi'
+    - '--set-env-vars'
+    - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs'
+  waitFor: ['Push Hotfix']
+  id: 'Deploy Backend'
+
+substitutions:
+  _REGION: 'us-central1'
+  _BUCKET_NAME: 'readpaper-storage-gen-lang-client-0098594892'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'

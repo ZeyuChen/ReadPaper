@@ -45,6 +45,14 @@ class StorageService(ABC):
     async def exists(self, path: str) -> bool:
         pass
 
+    async def get_file(self, path: str) -> bytes | None:
+        """Read a file and return raw bytes, or None if not found."""
+        try:
+            content = await self.read_file(path)
+            return content.encode('utf-8') if isinstance(content, str) else content
+        except (FileNotFoundError, Exception):
+            return None
+
 class LocalStorageService(StorageService):
     def __init__(self, base_path: str):
         self.base_path = os.path.abspath(base_path)
@@ -187,3 +195,12 @@ class GCSStorageService(StorageService):
         full_path = self._get_gcs_path(path)
         blob = self.bucket.blob(full_path)
         return await asyncio.to_thread(blob.exists)
+
+    async def get_file(self, path: str) -> bytes | None:
+        """Download a file as raw bytes from GCS, or return None if not found."""
+        full_path = self._get_gcs_path(path)
+        blob = self.bucket.blob(full_path)
+        exists = await asyncio.to_thread(blob.exists)
+        if not exists:
+            return None
+        return await asyncio.to_thread(blob.download_as_bytes)

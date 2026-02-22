@@ -401,9 +401,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
             "FAILED": (0, "Failed"),
         }
 
-        # Track last heartbeat message to avoid flooding the frontend with duplicates
-        last_heartbeat_msg = ""
-
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
@@ -437,27 +434,6 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, deep
                             "done" if outcome.strip() == "ok" else "failed"
                         )
 
-                # ── Fine-grained batch progress (message only, NOT %) ─────
-                elif code == "BATCH_PROGRESS":
-                    try:
-                        bp_parts = rest.split(":", 2)
-                        if len(bp_parts) >= 3:
-                            b_done, b_total, fname = int(bp_parts[0]), int(bp_parts[1]), bp_parts[2]
-                            update_file_status(task_key, fname, "translating", b_done, b_total)
-                            # Only update the message, NOT the percentage.
-                            # The percentage is driven by file-level TRANSLATING events.
-                            update_status(task_key, "processing",
-                                          f"Translating {fname} — batch {b_done}/{b_total}", current_pct)
-                    except Exception:
-                        update_status(task_key, "processing", "Translating...", current_pct)
-
-                # ── Heartbeat ──────────────────────────────────────────────
-                elif code == "HEARTBEAT":
-                    msg = rest.strip() if rest.strip() else "Translating... ⚙"
-                    # Only update status if the message actually changed
-                    if msg != last_heartbeat_msg:
-                        last_heartbeat_msg = msg
-                        update_status(task_key, "processing", msg, current_pct)
 
                 # ── Per-file token summary ─────────────────────────────────
                 elif code == "TOKENS_TOTAL":

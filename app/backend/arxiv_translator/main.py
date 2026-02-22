@@ -1,29 +1,28 @@
 """
-arXiv LaTeX Translator — Main Orchestrator (Robust Pipeline v2)
+arXiv LaTeX Translator — Simplified Pipeline
 
-4-Phase pipeline:
-  Phase 0: ANALYZE       — Classify files, build dependency graph
-  Phase 1+2: EXTRACT     — Per-file: extract text nodes, translate prose only
-  Phase 3: POST-PROCESS  — Targeted regex fixes (no LLM structure corruption)
-  Phase 4: COMPILE+FIX   — Error-driven AI fix loop (up to 3 attempts)
+Leverages Gemini 3.0 Flash's 1M context window to translate each .tex file
+in its entirety. No text-node extraction, no batching, no delimiter splitting.
+
+Pipeline:
+  1. DOWNLOAD   — Fetch arXiv source tarball
+  2. EXTRACT    — Unpack and analyse paper structure
+  3. TRANSLATE  — Per-file async Gemini API calls (one file = one call)
+  4. COMPILE    — pdflatex/xelatex compilation
 """
 
 import argparse
+import asyncio
 import os
 import shutil
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .analyzer import PaperAnalyzer
-from .text_extractor import LatexTextExtractor
-from .translator import GeminiTranslator
-from .downloader import download_source
-from .extractor import extract_source
 from .compiler import compile_with_fix_loop
-from .config import ConfigManager
-from .deepdive import DeepDiveAnalyzer
+from .config_manager import ConfigManager
+from .downloader import download_source, extract_source
 from .logging_utils import logger, log_ipc
-from .post_process import apply_post_processing
+from .translator import GeminiTranslator
 from .latex_cleaner import clean_latex_directory
 
 try:
@@ -33,76 +32,49 @@ except ImportError:
     pass
 
 
-# ── Parallel Worker Functions (must be module-level for ProcessPoolExecutor) ──
+# ── Per-file translation worker ──────────────────────────────────────────────
 
-def translate_file_worker(api_key: str, model_name: str, file_path: str) -> tuple[bool, str, int]:
+async def translate_one_file(
+    translator: GeminiTranslator,
+    filepath: str,
+    file_idx: int,
+    total_files: int,
+) -> tuple[str, int, int, bool]:
     """
-    Worker: translate a single .tex file using the text-node approach.
-    Returns (success, file_path, failed_node_count).
+    Translate a single .tex file in-place.
+    Returns (filename, in_tokens, out_tokens, success).
     """
+    filename = os.path.basename(filepath)
+
     try:
-        translator = GeminiTranslator(api_key=api_key, model_name=model_name)
-        extractor = LatexTextExtractor()
-
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Skip very short files or files with no English text worth translating
+        # Skip very short files (style files, empty stubs)
         if len(content.strip()) < 50:
-            return True, file_path, 0
+            logger.info(f"[{filename}] Too short ({len(content)} chars), skipping")
+            log_ipc(f"PROGRESS:FILE_DONE:{filename}:ok")
+            return filename, 0, 0, True
 
-        # Extract text nodes
-        nodes, _ = extractor.extract(content)
+        # Translate entire file
+        translated, in_tok, out_tok = await translator.translate_file(content, filename)
 
-        if not nodes:
-            logger.info(f"No translatable text nodes in {os.path.basename(file_path)}, skipping.")
-            return True, file_path, 0
+        # Write back
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(translated)
 
-        # Translate nodes (in-place) — returns (nodes, failed_count)
-        # Pass file_name so IPC BATCH_PROGRESS lines are labelled per file.
-        file_name = os.path.basename(file_path)
-        nodes, failed_count = translator.translate_text_nodes(nodes, file_name=file_name)
+        # Report progress
+        log_ipc(f"PROGRESS:TRANSLATING:{file_idx}:{total_files}:✅ {filename} | In {in_tok:,}/Out {out_tok:,} tokens")
+        log_ipc(f"PROGRESS:TOKENS_TOTAL:{in_tok}:{out_tok}:{filename}")
+        log_ipc(f"PROGRESS:FILE_DONE:{filename}:ok")
 
-        # Reintegrate translations into original content
-        translated_content = extractor.reintegrate(content, nodes)
-
-        # If some nodes failed, inject a visible warning comment at the top of the file
-        if failed_count > 0:
-            warning_comment = (
-                f"% ============================================================\n"
-                f"% \u26a0\ufe0f  TRANSLATION WARNING: {failed_count} text segment(s) could not be\n"
-                f"%    translated and remain in the original English.\n"
-                f"%    This is usually caused by a temporary API failure.\n"
-                f"% ============================================================\n"
-            )
-            translated_content = warning_comment + translated_content
-            logger.warning(f"[{os.path.basename(file_path)}] {failed_count} nodes kept in English (API failure)")
-
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(translated_content)
-
-        return True, file_path, failed_count
+        return filename, in_tok, out_tok, True
 
     except Exception as e:
-        logger.error(f"Worker failed for {file_path}: {e}", exc_info=True)
-        return False, file_path, 0
-
-
-def deepdive_analysis_worker(api_key: str, file_path: str, model_name: str = "gemini-3-flash-preview") -> tuple[bool, str]:
-    try:
-        analyzer = DeepDiveAnalyzer(api_key, model_name=model_name)
-        file_name = os.path.basename(file_path)
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        analyzed = analyzer.analyze_latex(content, file_name)
-        if analyzed != content:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(analyzed)
-            return True, file_name
-        return False, file_name
-    except Exception as e:
-        logger.error(f"DeepDive worker failed for {os.path.basename(file_path)}: {e}", exc_info=True)
-        return False, os.path.basename(file_path)
+        logger.error(f"[{filename}] Translation failed: {e}", exc_info=True)
+        log_ipc(f"PROGRESS:TRANSLATING:{file_idx}:{total_files}:❌ {filename} failed")
+        log_ipc(f"PROGRESS:FILE_DONE:{filename}:fail")
+        return filename, 0, 0, False
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
@@ -111,12 +83,12 @@ def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
 
-    parser = argparse.ArgumentParser(description="arXiv LaTeX Translator (Robust Pipeline v2)")
+    parser = argparse.ArgumentParser(description="arXiv LaTeX Translator (Simplified)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("arxiv_url", nargs="?", help="arXiv URL or ID")
     group.add_argument("--set-key", help="Save Gemini API key to config and exit")
 
-    parser.add_argument("--model", default="gemini-3-flash-preview", help="Gemini model to use")
+    parser.add_argument("--model", default="gemini-3-flash-preview", help="Gemini model")
     parser.add_argument("--output", "-o", help="Custom output path for translated PDF")
     parser.add_argument("--keep", action="store_true", help="Keep intermediate files")
     parser.add_argument("--deepdive", action="store_true", help="Enable AI DeepDive analysis")
@@ -150,8 +122,7 @@ def main():
     # Extract arXiv ID
     arxiv_id = args.arxiv_url.rstrip('/').split('/')[-1].replace('.pdf', '')
 
-    logger.info(f"Starting robust translation for {arxiv_id} using {model_name}")
-    logger.info(f"DeepDive: {'ENABLED' if args.deepdive else 'DISABLED'}")
+    logger.info(f"Starting translation for {arxiv_id} using {model_name}")
 
     work_dir = os.path.abspath(f"workspace_{arxiv_id}")
     if os.path.exists(work_dir) and not args.keep:
@@ -173,13 +144,6 @@ def main():
         source_dir = os.path.join(work_dir, "source")
         if not os.path.exists(source_dir):
             extract_source(tar_path, source_dir)
-            try:
-                import glob
-                num_extracted = sum(1 for _ in glob.iglob(os.path.join(source_dir, "**", "*"), recursive=True))
-                log_ipc(f"PROGRESS:EXTRACTING:Extracted {num_extracted} files from source package")
-            except Exception:
-                pass
-
 
         # Copy to working translation directory
         source_zh_dir = os.path.join(work_dir, "source_zh")
@@ -187,102 +151,63 @@ def main():
             shutil.rmtree(source_zh_dir)
         shutil.copytree(source_dir, source_zh_dir)
 
-        # ── Phase 0: Structural Analysis ──────────────────────────────────
+        # ── Structural Analysis ───────────────────────────────────────────
         log_ipc(f"PROGRESS:EXTRACTING:Analyzing paper structure...")
         analyzer = PaperAnalyzer(source_zh_dir)
         structure = analyzer.analyze()
         main_tex = structure.main_tex
 
-        logger.info(f"Main tex: {os.path.relpath(main_tex, source_zh_dir)}")
         translatable = structure.translatable_files()
         skipped = structure.skip_files()
+        logger.info(f"Main tex: {os.path.relpath(main_tex, source_zh_dir)}")
         logger.info(f"Files to translate: {len(translatable)}, to skip: {len(skipped)}")
 
-        # ── Clean LaTeX comments (reduces token count) ────────────────────
+        # ── Clean LaTeX comments ──────────────────────────────────────────
         log_ipc(f"PROGRESS:EXTRACTING:Cleaning LaTeX comments...")
         cleaned_count = clean_latex_directory(source_zh_dir)
         logger.info(f"Cleaned {cleaned_count} files")
 
-        # ── Pre-flight compilation (sanity check) ─────────────────────────
-        log_ipc(f"PROGRESS:PRE_FLIGHT:Running pre-flight compilation check...")
-        pre_success, _ = compile_pdf(source_zh_dir, main_tex, timeout=120)
-        if not pre_success:
-            logger.warning("Pre-flight FAILED — source LaTeX may already be broken. Proceeding anyway.")
-        else:
-            logger.info("Pre-flight SUCCESS.")
-
-        # ── Phase 3 (Optional): DeepDive Analysis ────────────────────────
-        # MAX_CONCURRENT_REQUESTS: number of .tex files translated in parallel (ProcessPoolExecutor).
-        # MAX_BATCH_CONCURRENCY (in translator.py): within each file, number of
-        #   concurrent Gemini API calls fired simultaneously via asyncio.gather.
-        # Default: 16 file workers × 8 concurrent batches each = up to 128 in-flight requests.
-        # Tune down if you hit 429 rate-limit errors.
-        max_workers = int(os.getenv("MAX_CONCURRENT_REQUESTS", "16"))
-
-        if args.deepdive:
-            log_ipc(f"PROGRESS:ANALYZING:Starting AI DeepDive ({max_workers} workers)...")
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(deepdive_analysis_worker, api_key, f, model_name): f
-                    for f in translatable
-                }
-                aux_count = 0
-                for future in as_completed(futures):
-                    aux_count += 1
-                    try:
-                        changed, fname = future.result()
-                        status = "Analyzed" if changed else "Skipped"
-                        log_ipc(f"PROGRESS:ANALYZING:{aux_count}:{len(translatable)}:{status} {fname}")
-                    except Exception as e:
-                        logger.error(f"DeepDive future error: {e}")
-
-        # ── Phase 1+2: Parallel Text-Node Translation ─────────────────────
+        # ── Translate all files concurrently ──────────────────────────────
         total_files = len(translatable)
-
-        # Emit the full file list so the backend can initialise the per-file
-        # status table before any workers start. Pipe-separated basenames.
         file_list_names = "|".join(os.path.basename(f) for f in translatable)
         log_ipc(f"PROGRESS:FILE_LIST:{file_list_names}")
-        log_ipc(f"PROGRESS:TRANSLATING:0:{total_files}:Starting text-node translation ({model_name})...")
+        log_ipc(f"PROGRESS:TRANSLATING:0:{total_files}:Starting whole-file translation ({model_name})...")
 
-        completed_count = 0
-        total_failed_nodes = 0
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(translate_file_worker, api_key, model_name, f): f
-                for f in translatable
-            }
-            for future in as_completed(futures):
-                file_path = futures[future]
-                file_name = os.path.basename(file_path)
-                completed_count += 1
-                try:
-                    success, _, failed_nodes = future.result()
-                    total_failed_nodes += failed_nodes
-                    outcome = "ok" if success else "fail"
-                    if success:
-                        log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Translated {file_name}")
-                    else:
-                        log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Failed {file_name}")
-                    log_ipc(f"PROGRESS:FILE_DONE:{file_name}:{outcome}")
-                except Exception as exc:
-                    logger.error(f"Worker exception for {file_name}: {exc}", exc_info=True)
-                    log_ipc(f"PROGRESS:TRANSLATING:{completed_count}:{total_files}:Error {file_name}")
-                    log_ipc(f"PROGRESS:FILE_DONE:{file_name}:fail")
+        translator = GeminiTranslator(api_key=api_key, model_name=model_name)
 
-        # Surface translation failures to the user via IPC
-        if total_failed_nodes > 0:
+        # Run all file translations concurrently with asyncio
+        async def run_all():
+            # Use a semaphore to limit concurrent API calls
+            max_concurrent = int(os.getenv("MAX_CONCURRENT_REQUESTS", "4"))
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def guarded_translate(filepath, idx):
+                async with semaphore:
+                    return await translate_one_file(translator, filepath, idx, total_files)
+
+            tasks = [
+                guarded_translate(f, i + 1)
+                for i, f in enumerate(translatable)
+            ]
+            return await asyncio.gather(*tasks)
+
+        results = asyncio.run(run_all())
+
+        # Summarize results
+        total_in = sum(r[1] for r in results)
+        total_out = sum(r[2] for r in results)
+        failed_files = [r[0] for r in results if not r[3]]
+
+        if failed_files:
             log_ipc(
-                f"PROGRESS:WARN:Translation incomplete — {total_failed_nodes} segment(s) "
-                f"kept in original English due to API errors. "
-                f"PDF may contain mixed-language content."
+                f"PROGRESS:WARN:{len(failed_files)} file(s) failed translation: "
+                f"{', '.join(failed_files)}"
             )
 
-        # ── Phase 3: Post-Processing ───────────────────────────────────────
-        log_ipc(f"PROGRESS:POST_PROCESSING:Applying robustness fixes...")
-        apply_post_processing(source_zh_dir, main_tex)
+        logger.info(f"Translation complete — In: {total_in:,} / Out: {total_out:,} tokens total")
+        logger.info(f"Failed files: {len(failed_files)}/{total_files}")
 
-        # ── Phase 4: Single-Shot Compile ───────────────────────────────────
+        # ── Compile PDF ───────────────────────────────────────────────────
         log_ipc(f"PROGRESS:COMPILING:Compiling PDF (pdfLaTeX)...")
 
         suffix = "_zh_deepdive" if args.deepdive else "_zh"
@@ -303,16 +228,15 @@ def main():
         if success and os.path.exists(compiled_pdf):
             shutil.copy(compiled_pdf, final_pdf)
             logger.info(f"SUCCESS: Generated {final_pdf}")
-            if total_failed_nodes > 0:
+            if failed_files:
                 log_ipc(
-                    f"PROGRESS:COMPLETED_WITH_WARNINGS:{total_failed_nodes} segment(s) kept in English "
-                    f"due to API errors."
+                    f"PROGRESS:COMPLETED_WITH_WARNINGS:{len(failed_files)} file(s) "
+                    f"could not be translated."
                 )
             else:
                 log_ipc(f"PROGRESS:COMPLETED:Translation finished successfully.")
         else:
             logger.error("PDF generation failed.")
-            # Emit the LaTeX error log so the frontend can display it.
             error_msg = compile_error[:1500] if compile_error else "PDF compilation failed."
             log_ipc(f"PROGRESS:FAILED:{error_msg}")
 
@@ -321,7 +245,7 @@ def main():
         log_ipc(f"PROGRESS:FAILED:{str(e)[:200]}")
     finally:
         if not args.keep:
-            pass  # Keep workspace for debugging; uncomment to clean: shutil.rmtree(work_dir)
+            pass  # Keep workspace for debugging
 
 
 if __name__ == "__main__":
