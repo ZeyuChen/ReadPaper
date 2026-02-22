@@ -214,7 +214,7 @@ def main():
             main_tex=main_tex,
             api_key=api_key,
             model_name=model_name,
-            timeout=200,
+            timeout=600,
         )
 
         # Locate the compiled PDF
