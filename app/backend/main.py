@@ -685,13 +685,34 @@ async def get_library(library_manager: LibraryManager = Depends(get_library_mana
 async def delete_paper(
     arxiv_id: str, 
     library_manager: LibraryManager = Depends(get_library_manager),
-    storage_service: StorageService = Depends(get_storage_service)
+    storage_service: StorageService = Depends(get_storage_service),
+    user_id: str = Depends(get_current_user),
 ):
     success = await library_manager.delete_paper(arxiv_id)
     if not success:
         raise HTTPException(status_code=404, detail="Paper not found")
     
+    # Delete all user files (PDFs, tex files, etc.)
     await storage_service.delete_folder(arxiv_id)
+    
+    # Clean up status cache in GCS and in-memory
+    task_key = f"{user_id}:{arxiv_id}"
+    # Remove from in-memory status dict
+    TASK_STATUS.pop(task_key, None)
+    # Remove GCS status file
+    if GCS_BUCKET_NAME:
+        try:
+            status_path = _status_key_to_gcs_path(task_key)
+            from google.cloud import storage as gcs_storage
+            client = gcs_storage.Client()
+            blob = client.bucket(GCS_BUCKET_NAME).blob(status_path)
+            if blob.exists():
+                blob.delete()
+                logger.info(f"Deleted GCS status cache: {status_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete status cache: {e}")
+    
+    logger.info(f"Deleted paper {arxiv_id} for user {user_id}: files + status cache")
     return {"message": "Deleted"}
 
 @app.get("/search")
