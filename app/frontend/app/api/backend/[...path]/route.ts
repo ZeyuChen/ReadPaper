@@ -13,6 +13,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 
+// Allow long-running requests (PDF downloads, translation polling)
+export const maxDuration = 300;
+
 // This is the runtime backend URL — read from env at request time, not build time.
 const BACKEND_URL =
     process.env.API_URL ||
@@ -91,6 +94,22 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
             responseHeaders.set(key, value);
         }
 
+        // Stream binary responses (PDFs, images) instead of buffering the entire body.
+        // For large files (e.g. 6MB translated PDFs), buffering with arrayBuffer()
+        // can exceed the serverless function timeout and cause "Failed to fetch" errors.
+        const contentType = response.headers.get('content-type') || '';
+        const isBinary = contentType.startsWith('application/pdf') ||
+            contentType.startsWith('image/') ||
+            contentType.startsWith('application/octet-stream');
+
+        if (isBinary && response.body) {
+            return new NextResponse(response.body as any, {
+                status: response.status,
+                headers: responseHeaders,
+            });
+        }
+
+        // For JSON/text responses, buffer as before
         const responseBody = await response.arrayBuffer();
         return new NextResponse(responseBody, {
             status: response.status,
@@ -104,3 +123,4 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
         );
     }
 }
+

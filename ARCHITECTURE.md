@@ -6,8 +6,8 @@ All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`).
 
 ReadPaper consists of two services deployed on Google Cloud Run:
 
-1. **Frontend (Next.js)** — User interface: paper search, translation trigger, progress display with token usage, split-view PDF reader.
-2. **Backend (FastAPI)** — Translation pipeline: arXiv download, analysis, Gemini translation, XeLaTeX compilation. IPC-based progress streaming.
+1. **Frontend (Next.js)** — User interface: Google OAuth login, paper search, translation trigger, progress display with token usage, split-view PDF reader, admin dashboard.
+2. **Backend (FastAPI)** — Translation pipeline: arXiv download, analysis, Gemini translation, XeLaTeX compilation. IPC-based progress streaming. PDF delivery via GCS signed URLs.
 
 ## Translation Pipeline
 
@@ -95,18 +95,65 @@ The subprocess (`arxiv_translator/main.py`) communicates with the backend (`main
 | `COMPLETED` | `message` | Success |
 | `FAILED` | `message` | Error |
 
+## PDF Delivery
+
+PDFs are served via **GCS Signed URLs** to avoid proxying large files through the backend:
+
+1. Frontend calls `/paper/{arxiv_id}/original` or `/paper/{arxiv_id}/translated`
+2. Backend checks known PDF paths in GCS directly (no `list_files()` overhead)
+3. Generates a time-limited signed URL (15 min) via IAM `signBlob` API
+4. Returns JSON `{"url": "https://storage.googleapis.com/...?X-Goog-Signature=..."}`
+5. Frontend sets the signed URL directly as iframe `src`
+
+Fallback: if signed URL generation fails, backend proxies the download via `download_as_bytes`.
+
 ## Storage
 
 Two backends via `StorageService`:
 - **Local**: Files on disk at `./paper_storage/`
-- **GCS**: Google Cloud Storage with bucket prefix per user
+- **GCS**: Google Cloud Storage with bucket prefix per user (`users/{email}/{arxiv_id}/`)
 
 Stored per paper:
-- `original.pdf` — Original English PDF
-- `translated.pdf` — Translated Chinese PDF
-- `tex/original/` — Original `.tex` source files
-- `tex/translated/` — Translated `.tex` source files
-- `status.json` — Cached translation status
+- `{arxiv_id}.pdf` — Original English PDF
+- `{arxiv_id}v{N}_zh.pdf` — Translated Chinese PDF
+- `tex/` — Source `.tex` files (original and translated)
+- `status.json` — Cached translation status with token counts
+
+## Translation Cache
+
+`services/cache.py` provides GCS-backed caching with integrity validation:
+
+- **Cache key**: `{email}/{arxiv_id}/status.json`
+- **Hit condition**: `status == "completed"` with valid token counts
+- **On hit**: Paper is added to the user's library instantly without re-translation
+- Prevents duplicate Gemini API usage for previously translated papers
+
+## Authentication
+
+- **Frontend**: NextAuth.js v5 with Google OAuth provider
+- **Backend**: Validates Google ID token via `google.auth.transport` or accepts `x-user-email` header
+- **Admin**: `/admin` page with user/paper management and delete operations
+
+## Admin Dashboard
+
+The admin dashboard (`/admin`) provides:
+
+- **Overview**: Total users, papers, translations, and storage usage
+- **User Management**: Browse users, view their papers, delete user data
+- **Paper Management**: View all translated papers, re-trigger compilation, delete papers
+- **System Health**: Model usage statistics, recent activity
+
+## Cloud Run Configuration
+
+Backend Cloud Run service is optimized for long-running translation tasks:
+
+| Setting | Value | Reason |
+|---|---|---|
+| `--cpu` | `2` | Sufficient CPU for parallel LaTeX compilation |
+| `--memory` | `4Gi` | Large papers need memory for TeX processing |
+| `--timeout` | `900` | 15-minute timeout for long compilations |
+| `--no-cpu-throttling` | enabled | Background tasks get full CPU after HTTP response returns |
+| `--min-instances` | `1` | Avoid cold starts |
 
 ## Local Development
 

@@ -46,8 +46,13 @@ steps:
     - '--allow-unauthenticated'
     - '--memory'
     - '4Gi'
+    - '--cpu'
+    - '2'
+    - '--timeout'
+    - '900'
+    - '--no-cpu-throttling'
     - '--set-env-vars'
-    - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs'
+    - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs,GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID},DISABLE_AUTH=false'
   waitFor: ['Push Hotfix']
   id: 'Deploy Backend'
 

@@ -24,9 +24,13 @@
 - **Smart Structure Analysis** (`analyzer.py`): Classifies files as main/sub/macro/style, builds `\input` dependency graph, identifies the main `.tex` entrypoint.
 - **AI Compile Fix Loop** (`compiler.py`): Up to 3 iterative compile attempts with Gemini-powered error fixing. Parses error log → fixes the offending file → retries.
 - **Dynamic Compile Timeout**: Base 300s + 60s per 10k output tokens, capped at 1200s. Adapts to paper size automatically.
+- **Translation Cache**: GCS-backed cache with integrity validation — previously translated papers are served instantly.
 - **Token Usage Tracking**: Real-time Gemini API token usage displayed in frontend during translation.
-- **Cloud Scale**: Google Cloud Run + GCS with direct blob streaming.
+- **Admin Dashboard**: Full admin panel with user management, paper management (delete), and system overview.
+- **GCS Signed URL Delivery**: PDFs served via time-limited signed URLs directly from GCS — no backend proxy bottleneck.
+- **Cloud Scale**: Google Cloud Run with `--no-cpu-throttling` for reliable background task execution + GCS storage.
 - **Split-View Reader**: Side-by-side bilingual PDF viewing in Next.js frontend.
+- **Google OAuth**: Secure authentication via Google Sign-In with per-user paper libraries.
 
 ## 🏗️ Architecture
 
@@ -50,7 +54,7 @@ User → Next.js Frontend → FastAPI Backend
                     │     └─ Gemini fixes errors between retries │
                     └────────────────────────────────────────────┘
                                 ↓
-                     GCS / Local Storage → PDF via StreamingResponse
+                     GCS / Local Storage → Signed URL → Browser
 ```
 
 ## 🧠 How Translation Works
@@ -85,6 +89,7 @@ After translation, the project is compiled with `latexmk -xelatex`:
 | `GEMINI_API_KEY` | ✅ | Gemini API key from [AI Studio](https://aistudio.google.com/) |
 | `STORAGE_TYPE` | No | `local` (default) or `gcs` |
 | `GCS_BUCKET_NAME` | For GCS | GCS bucket name |
+| `GOOGLE_CLIENT_ID` | For auth | Google OAuth 2.0 Client ID |
 | `MAX_CONCURRENT_REQUESTS` | No | Concurrent Gemini API calls (default: 4) |
 | `DISABLE_AUTH` | No | Set `true` for local dev (skips OAuth) |
 
@@ -101,8 +106,13 @@ cp .env.example .env
 ```bash
 gcloud builds submit \
   --config=cloudbuild.yaml \
-  --substitutions=_GEMINI_API_KEY=...,_GOOGLE_CLIENT_ID=...,_GOOGLE_CLIENT_SECRET=...
+  --substitutions=_GEMINI_API_KEY=...,_GOOGLE_CLIENT_ID=...,_GOOGLE_CLIENT_SECRET=...,_NEXTAUTH_SECRET=...
 ```
+
+Cloud Run backend is configured with:
+- `--cpu=2` — Sufficient CPU for LaTeX compilation
+- `--timeout=900` — 15-minute request timeout for long compilations
+- `--no-cpu-throttling` — Background tasks (compilation) get full CPU even after request returns
 
 ## 📦 Project Structure
 
@@ -123,12 +133,18 @@ gcloud builds submit \
 │   │   ├── services/
 │   │   │   ├── auth.py             # Google OAuth verification
 │   │   │   ├── storage.py          # Local / GCS storage abstraction
-│   │   │   └── library.py          # User paper library
-│   │   ├── main.py                 # FastAPI REST API + IPC handler
+│   │   │   ├── library.py          # User paper library (GCS-backed)
+│   │   │   ├── cache.py            # Translation cache with integrity checks
+│   │   │   └── rate_limiter.py     # API rate limiting
+│   │   ├── main.py                 # FastAPI REST API + admin endpoints
 │   │   └── Dockerfile
 │   ├── frontend/
 │   │   ├── components/
-│   │   │   └── ClientHome.tsx      # Main UI with progress + token display
+│   │   │   ├── ClientHome.tsx      # Main UI with progress + token display
+│   │   │   └── SplitView.tsx       # Split-view PDF reader
+│   │   ├── app/
+│   │   │   ├── admin/page.tsx      # Admin dashboard
+│   │   │   └── api/backend/        # Backend proxy with streaming
 │   │   └── Dockerfile
 ├── tests/
 │   └── test_e2e_pipeline.py        # Mocked E2E test

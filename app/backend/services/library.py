@@ -49,11 +49,19 @@ class LibraryManager:
         except Exception as e:
             logger.error(f"Failed to save library: {e}")
 
-    async def add_paper(self, arxiv_id: str, model: str, title: str, abstract: str, authors: List[str], categories: List[str]):
+    async def add_paper(
+        self, arxiv_id: str, model: str, title: str, abstract: str,
+        authors: List[str], categories: List[str],
+        total_in_tokens: int = 0, total_out_tokens: int = 0,
+    ):
         """
         Adds or updates a paper in the library.
         If the paper exists, it updates the version info for the given model.
+        Persists token usage (in/out) and real ISO timestamps for admin analytics.
         """
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         await self._load_library()
         
         if arxiv_id not in self._cache:
@@ -72,12 +80,16 @@ class LibraryManager:
         
         if existing:
             existing["status"] = "completed"
-            existing["timestamp"] = "now" # TODO: Real timestamp
+            existing["timestamp"] = now_iso
+            existing["total_in_tokens"] = total_in_tokens
+            existing["total_out_tokens"] = total_out_tokens
         else:
             versions.append({
                 "model": model,
                 "status": "completed",
-                "timestamp": "now"
+                "timestamp": now_iso,
+                "total_in_tokens": total_in_tokens,
+                "total_out_tokens": total_out_tokens,
             })
             
         await self._save_library()

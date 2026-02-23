@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import SplitView from '@/components/SplitView';
 import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft, DownloadCloud, Languages, FileCheck2, Check } from 'lucide-react';
 
@@ -36,6 +37,7 @@ interface FileStatus {
 }
 
 export default function ClientHome({ config }: ClientHomeProps) {
+    const router = useRouter();
     const [url, setUrl] = useState('');
     const [arxivId, setArxivId] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
@@ -81,6 +83,15 @@ export default function ClientHome({ config }: ClientHomeProps) {
     const elapsedTimerRef = useRef<NodeJS.Timeout | null>(null);
     // Dedup: skip addLog if the message is the same as last time
     const lastLoggedMsgRef = useRef<string>('');
+
+    // Admin detection
+    const [isAdmin, setIsAdmin] = useState(false);
+    useEffect(() => {
+        fetch(`${config.apiUrl}/admin/is-admin`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d?.is_admin) setIsAdmin(true); })
+            .catch(() => { });
+    }, [config.apiUrl]);
 
     // Smooth progress animation
     useEffect(() => {
@@ -431,6 +442,16 @@ export default function ClientHome({ config }: ClientHomeProps) {
                     <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
                         {userName.charAt(0).toUpperCase()}
                     </div>
+                )}
+                {isAdmin && (
+                    <button
+                        onClick={() => router.push('/admin')}
+                        className="flex items-center gap-1 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full transition-colors font-medium border border-blue-100"
+                        title="Admin Dashboard"
+                    >
+                        <Shield size={12} />
+                        Admin
+                    </button>
                 )}
                 {!config.disableAuth && (
                     <button

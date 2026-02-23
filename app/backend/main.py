@@ -18,7 +18,7 @@ except ImportError as e:
     # continue to let it fail later or explore why
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, TypedDict, Optional, List
@@ -151,6 +151,22 @@ class _TaskStatusProxy:
 
     def keys(self):
         return _LOCAL_TASK_STATUS.keys()
+
+    def pop(self, key, *args):
+        """Remove a task status entry from both in-memory and GCS."""
+        # Remove from in-memory
+        result = _LOCAL_TASK_STATUS.pop(key, *args)
+        # Remove from GCS if applicable
+        if STORAGE_TYPE == "gcs" and GCS_BUCKET_NAME:
+            try:
+                from google.cloud import storage as gcs_lib
+                client = _get_gcs_client()
+                blob = client.bucket(GCS_BUCKET_NAME).blob(_status_key_to_gcs_path(key))
+                if blob.exists():
+                    blob.delete()
+            except Exception as e:
+                logger.warning(f"GCS status delete error for {key}: {e}")
+        return result
 
 
 TASK_STATUS = _TaskStatusProxy()
@@ -675,14 +691,19 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user
              # Clean up integrity tracking
              _FILE_INTEGRITY.pop(task_key, None)
 
-             # Update Library
+             # Update Library (include token usage for admin analytics)
+             current_state = TASK_STATUS.get(task_key, {})
+             total_in = current_state.get("total_in_tokens", 0)
+             total_out = current_state.get("total_out_tokens", 0)
              meta = fetch_arxiv_metadata(arxiv_id)
              await library_manager.add_paper(
                  arxiv_id, model, 
                  meta.get("title", arxiv_id), 
                  meta.get("abstract", ""), 
                  meta.get("authors", []), 
-                 meta.get("categories", [])
+                 meta.get("categories", []),
+                 total_in_tokens=total_in,
+                 total_out_tokens=total_out,
              )
              update_status(task_key, "completed", "Processing complete.", 100)
         else:
@@ -871,77 +892,79 @@ async def get_paper(
 ):
     """
     Serves the PDF file (original or translated) for a specific paper.
-    Returns 404 (not 500) when a file is missing.
+    For GCS: redirects to a signed URL so the browser downloads directly from GCS.
+    For local: serves the file directly.
     """
-    files = storage_service.list_files(f"{arxiv_id}/")
-    target = None
-    
     if file_type == "original":
-        # Exact name: {arxiv_id}.pdf
-        expected = f"{arxiv_id}/{arxiv_id}.pdf"
-        if any(f == expected or f.endswith(f"/{arxiv_id}.pdf") for f in files):
-            target = expected
-        elif files:
-            # Fallback: any PDF that matches the arxiv_id exactly
-            for f in files:
-                if os.path.basename(f) == f"{arxiv_id}.pdf":
-                    target = f"{arxiv_id}/{os.path.basename(f)}"
-                    break
-
+        # Known path for original PDF
+        candidates = [f"{arxiv_id}/{arxiv_id}.pdf"]
     elif file_type == "translated":
-        # Match any translated PDF: prefers _zh suffix, accepts any non-original PDF
-        original_name = f"{arxiv_id}.pdf"
-        best = None
-        fallback = None
-        for f in files:
-            basename = os.path.basename(f)
-            if not basename.endswith(".pdf"):
-                continue
-            if basename == original_name:
-                continue  # Skip the original
-            if "_zh" in basename:
-                best = f"{arxiv_id}/{basename}"
-                break  # Take first _zh match
-            elif fallback is None:
-                fallback = f"{arxiv_id}/{basename}"
-        target = best or fallback
-    
-    if not target:
-        raise HTTPException(status_code=404, detail=f"{file_type} PDF not found for {arxiv_id}")
+        # Translated PDF naming conventions:
+        # - {arxiv_id}_zh.pdf (base, e.g. 2602.15763_zh.pdf)
+        # - {arxiv_id}v{N}_zh.pdf (versioned, e.g. 2602.15763v1_zh.pdf)
+        candidates = [f"{arxiv_id}/{arxiv_id}_zh.pdf"]
+        # Also try versioned variants (v1 through v5)
+        for v in range(1, 6):
+            candidates.append(f"{arxiv_id}/{arxiv_id}v{v}_zh.pdf")
+    else:
+        raise HTTPException(status_code=400, detail="file_type must be 'original' or 'translated'")
 
     if isinstance(storage_service, LocalStorageService):
-        full_path = storage_service._get_full_path(target)
-        if not os.path.exists(full_path):
-            logger.warning(f"PDF missing from local storage: {full_path}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"PDF file no longer available (server may have restarted)"
-            )
-        return FileResponse(full_path, media_type="application/pdf")
+        for candidate in candidates:
+            full_path = storage_service._get_full_path(candidate)
+            if os.path.exists(full_path):
+                return FileResponse(full_path, media_type="application/pdf")
+        raise HTTPException(status_code=404, detail=f"{file_type} PDF not found for {arxiv_id}")
 
     elif isinstance(storage_service, GCSStorageService):
-        gcs_path = storage_service._get_gcs_path(target)
-        blob = storage_service.bucket.blob(gcs_path)
-        try:
-            exists = await asyncio.to_thread(blob.exists)
-            if not exists:
-                raise HTTPException(status_code=404, detail="PDF not found in cloud storage")
-            # Stream the blob content directly — avoids needing a private key for signed URLs.
-            # Cloud Run's service account has Storage Object Viewer access, so this works.
-            filename = os.path.basename(target)
-            blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
-            return StreamingResponse(
-                iter([blob_bytes]),
-                media_type="application/pdf",
-                headers={"Content-Disposition": f'inline; filename="{filename}"'},
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"GCS blob download failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Could not read file from cloud storage: {str(e)}")
-            
-    raise HTTPException(status_code=404, detail="File could not be served")
+        # Try each candidate path directly — no listing needed
+        for candidate in candidates:
+            gcs_path = storage_service._get_gcs_path(candidate)
+            blob = storage_service.bucket.blob(gcs_path)
+            try:
+                exists = await asyncio.to_thread(blob.exists)
+                if exists:
+                    # Return a signed URL as JSON so the frontend can load the PDF directly
+                    # from GCS. We can't use a 302 redirect because the frontend uses fetch()
+                    # which blocks cross-origin redirects (CORS) to storage.googleapis.com.
+                    import datetime
+                    try:
+                        import google.auth
+                        import google.auth.transport.requests
+                        credentials, _ = google.auth.default()
+                        auth_req = google.auth.transport.requests.Request()
+                        credentials.refresh(auth_req)
+                        
+                        signed_url = blob.generate_signed_url(
+                            expiration=datetime.timedelta(minutes=15),
+                            method="GET",
+                            response_type="application/pdf",
+                            version="v4",
+                            service_account_email=credentials.service_account_email,
+                            access_token=credentials.token,
+                        )
+                        return JSONResponse({"url": signed_url})
+                    except Exception as sign_err:
+                        # Signed URLs require a service account key or IAM signBlob permission.
+                        # If that fails, fall back to proxying the download through the backend.
+                        logger.warning(f"Signed URL generation failed, falling back to proxy: {sign_err}")
+                        filename = os.path.basename(candidate)
+                        blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
+                        return Response(
+                            content=blob_bytes,
+                            media_type="application/pdf",
+                            headers={
+                                "Content-Disposition": f'inline; filename="{filename}"',
+                                "Content-Length": str(len(blob_bytes)),
+                            },
+                        )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"GCS blob check failed for {gcs_path}: {e}")
+                continue
+
+        raise HTTPException(status_code=404, detail=f"{file_type} PDF not found for {arxiv_id}")
 
 
 @app.get("/tasks")
@@ -968,16 +991,21 @@ async def get_tasks(user_id: str = Depends(get_current_user)):
 # ── Admin Endpoints ─────────────────────────────────────────────────────────
 
 SUPER_ADMIN_EMAIL = "chinachenzeyu@gmail.com"
+# For local dev testing with DISABLE_AUTH=true, also allow anonymous-user
+_DISABLE_AUTH_LOCAL = os.getenv("DISABLE_AUTH", os.getenv("NEXT_PUBLIC_DISABLE_AUTH", "false")).lower() == "true"
 
 async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
     Dependency: only allows the super-admin user through.
     user_id is the verified Google email from the JWT.
     Raises HTTP 403 for all other users.
+    In local dev mode (DISABLE_AUTH=true), anonymous-user is also allowed.
     """
-    if user_id != SUPER_ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user_id
+    if user_id == SUPER_ADMIN_EMAIL:
+        return user_id
+    if _DISABLE_AUTH_LOCAL and user_id == "anonymous-user":
+        return user_id
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 async def _list_all_user_ids() -> list[str]:
@@ -1007,11 +1035,10 @@ async def _list_all_user_ids() -> list[str]:
     return sorted(user_ids)
 
 
-@app.get("/admin/papers")
-async def admin_list_all_papers(admin_id: str = Depends(require_admin)):
+async def _load_all_papers_with_tokens() -> list[dict]:
     """
-    Admin endpoint: aggregate all papers across all users.
-    Returns: list of paper dicts, each enriched with a `user_id` field.
+    Load all papers across all users, enriched with token usage data.
+    Returns list of dicts with user_id, paper info, and token counts.
     """
     user_ids = await _list_all_user_ids()
     result = []
@@ -1021,30 +1048,206 @@ async def admin_list_all_papers(admin_id: str = Depends(require_admin)):
             lib = LibraryManager(user_storage)
             papers = await lib.list_papers()
             for paper in papers:
-                result.append({"user_id": uid, **paper})
+                # Compute total tokens across all versions
+                total_in = 0
+                total_out = 0
+                for v in paper.get("versions", []):
+                    total_in += v.get("total_in_tokens", 0)
+                    total_out += v.get("total_out_tokens", 0)
+                result.append({
+                    "user_id": uid,
+                    "total_in_tokens": total_in,
+                    "total_out_tokens": total_out,
+                    **paper,
+                })
         except Exception as e:
             logger.warning(f"Could not load library for user {uid}: {e}")
     return result
 
 
+@app.get("/admin/papers")
+async def admin_list_all_papers(admin_id: str = Depends(require_admin)):
+    """
+    Admin endpoint: aggregate all papers across all users.
+    Returns: list of paper dicts, each enriched with user_id and token counts.
+    """
+    return await _load_all_papers_with_tokens()
+
+
 @app.get("/admin/stats")
 async def admin_stats(admin_id: str = Depends(require_admin)):
     """
-    Admin endpoint: high-level stats — total users & papers.
+    Admin endpoint: high-level stats — total users, papers, and tokens.
     """
     user_ids = await _list_all_user_ids()
-    total_papers = 0
+    papers = await _load_all_papers_with_tokens()
+    total_in = sum(p.get("total_in_tokens", 0) for p in papers)
+    total_out = sum(p.get("total_out_tokens", 0) for p in papers)
+    return {
+        "total_users": len(user_ids),
+        "total_papers": len(papers),
+        "total_in_tokens": total_in,
+        "total_out_tokens": total_out,
+        "user_ids": user_ids,
+    }
+
+
+@app.get("/admin/users")
+async def admin_list_users(admin_id: str = Depends(require_admin)):
+    """
+    Admin endpoint: list all users with their paper counts and token usage.
+    """
+    user_ids = await _list_all_user_ids()
+    users = []
     for uid in user_ids:
         try:
             user_storage = root_storage.get_user_storage(uid)
             lib = LibraryManager(user_storage)
             papers = await lib.list_papers()
-            total_papers += len(papers)
-        except Exception:
-            pass
-    return {
-        "total_users": len(user_ids),
-        "total_papers": total_papers,
-        "user_ids": user_ids,
-    }
+            total_in = 0
+            total_out = 0
+            for paper in papers:
+                for v in paper.get("versions", []):
+                    total_in += v.get("total_in_tokens", 0)
+                    total_out += v.get("total_out_tokens", 0)
+
+            users.append({
+                "user_id": uid,
+                "email": uid,  # user_id IS the email
+                "paper_count": len(papers),
+                "total_in_tokens": total_in,
+                "total_out_tokens": total_out,
+            })
+        except Exception as e:
+            logger.warning(f"Could not load data for user {uid}: {e}")
+            users.append({
+                "user_id": uid,
+                "email": uid,
+                "paper_count": 0,
+                "total_in_tokens": 0,
+                "total_out_tokens": 0,
+            })
+    return users
+
+
+@app.get("/admin/daily-stats")
+async def admin_daily_stats(admin_id: str = Depends(require_admin)):
+    """
+    Admin endpoint: aggregate papers and tokens by date.
+    Returns list of { date, papers_count, total_in_tokens, total_out_tokens }
+    sorted chronologically. Used for the admin dashboard chart.
+    """
+    from collections import defaultdict
+
+    papers = await _load_all_papers_with_tokens()
+    daily: dict[str, dict] = defaultdict(lambda: {
+        "papers_count": 0,
+        "total_in_tokens": 0,
+        "total_out_tokens": 0,
+    })
+
+    for paper in papers:
+        for v in paper.get("versions", []):
+            ts = v.get("timestamp", "")
+            if not ts or ts == "now":
+                continue
+            # Parse ISO timestamp to date string (YYYY-MM-DD)
+            try:
+                date_str = ts[:10]  # "2026-02-23T..."  →  "2026-02-23"
+                daily[date_str]["papers_count"] += 1
+                daily[date_str]["total_in_tokens"] += v.get("total_in_tokens", 0)
+                daily[date_str]["total_out_tokens"] += v.get("total_out_tokens", 0)
+            except Exception:
+                continue
+
+    # Sort by date
+    result = sorted(
+        [{"date": d, **stats} for d, stats in daily.items()],
+        key=lambda x: x["date"],
+    )
+    return result
+
+
+@app.get("/admin/is-admin")
+async def admin_check(user_id: str = Depends(get_current_user)):
+    """
+    Check if the current user is an admin.
+    Returns { is_admin: true/false } — used by the frontend to show/hide the Admin button.
+    """
+    is_admin = user_id == SUPER_ADMIN_EMAIL or (_DISABLE_AUTH_LOCAL and user_id == "anonymous-user")
+    return {"is_admin": is_admin}
+
+
+@app.delete("/admin/papers/{target_user_id}/{arxiv_id}")
+async def admin_delete_paper(
+    target_user_id: str,
+    arxiv_id: str,
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Admin endpoint: delete a specific paper for a given user.
+    Removes: library entry, GCS/local files, status cache.
+    """
+    try:
+        user_storage = root_storage.get_user_storage(target_user_id)
+        lib = LibraryManager(user_storage)
+
+        # Delete from library.json
+        await lib.delete_paper(arxiv_id)
+
+        # Delete all files (PDFs, tex files, etc.)
+        await user_storage.delete_folder(arxiv_id)
+
+        # Clean up status cache (pop handles both in-memory and GCS)
+        task_key = f"{target_user_id}:{arxiv_id}"
+        TASK_STATUS.pop(task_key, None)
+
+        logger.info(f"Admin ({admin_id}) deleted paper {arxiv_id} for user {target_user_id}")
+        return {"message": f"Deleted paper {arxiv_id} for user {target_user_id}"}
+    except Exception as e:
+        logger.error(f"Admin delete paper failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/admin/users/{target_user_id}")
+async def admin_delete_user(
+    target_user_id: str,
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Admin endpoint: delete ALL data for a given user.
+    Removes: all paper files, library.json, all status caches.
+    """
+    try:
+        user_storage = root_storage.get_user_storage(target_user_id)
+        lib = LibraryManager(user_storage)
+
+        # Get all papers to clean up status cache (pop handles both in-memory and GCS)
+        papers = await lib.list_papers()
+        for paper in papers:
+            task_key = f"{target_user_id}:{paper.get('id', '')}"
+            TASK_STATUS.pop(task_key, None)
+
+        # Delete the entire user folder from storage
+        if isinstance(root_storage, GCSStorageService) and GCS_BUCKET_NAME:
+            from google.cloud import storage as gcs_storage
+            client = gcs_storage.Client()
+            bucket = client.bucket(GCS_BUCKET_NAME)
+            prefix = f"users/{target_user_id}/"
+            blobs = list(bucket.list_blobs(prefix=prefix))
+            if blobs:
+                bucket.delete_blobs(blobs)
+                logger.info(f"Admin deleted {len(blobs)} GCS blobs under {prefix}")
+        else:
+            import shutil
+            user_dir = os.path.join(PAPER_STORAGE_ROOT, "users", target_user_id)
+            if os.path.isdir(user_dir):
+                shutil.rmtree(user_dir)
+                logger.info(f"Admin deleted local user dir: {user_dir}")
+
+        logger.info(f"Admin ({admin_id}) deleted all data for user {target_user_id}")
+        return {"message": f"Deleted all data for user {target_user_id}", "papers_deleted": len(papers)}
+    except Exception as e:
+        logger.error(f"Admin delete user failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 

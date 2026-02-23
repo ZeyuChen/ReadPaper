@@ -84,11 +84,7 @@ function AuthenticatedPdfViewer({
         const fetchPdf = async (retries = 3) => {
             if (isMounted) { setLoading(true); setError(''); }
             try {
-                const headers: HeadersInit = {
-                    'Content-Type': 'application/json'
-                };
-
-                const res = await fetch(url, { headers });
+                const res = await fetch(url);
                 if (!res.ok) {
                     if (res.status === 404 && retries > 0) {
                         await new Promise(r => setTimeout(r, 1500));
@@ -105,6 +101,19 @@ function AuthenticatedPdfViewer({
                     throw new Error(errBody.detail || `Server error (${res.status})`);
                 }
 
+                const contentType = res.headers.get('content-type') || '';
+
+                // GCS signed URL response: backend returns JSON { url: "https://storage.googleapis.com/..." }
+                if (contentType.includes('application/json')) {
+                    const data = await res.json();
+                    if (data.url) {
+                        // Use the signed URL directly — no need to proxy through backend
+                        if (isMounted) setBlobUrl(data.url);
+                        return;
+                    }
+                }
+
+                // Fallback: direct PDF blob (local dev or when signed URL fails)
                 const blob = await res.blob();
                 objectUrl = URL.createObjectURL(blob);
                 if (isMounted) setBlobUrl(objectUrl);
