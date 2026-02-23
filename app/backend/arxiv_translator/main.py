@@ -123,8 +123,11 @@ def main():
     }
     model_name = model_aliases.get(model_name.lower(), model_name)
 
-    # Extract arXiv ID
+    # Extract arXiv ID (may include version suffix from URL)
     arxiv_id = args.arxiv_url.rstrip('/').split('/')[-1].replace('.pdf', '')
+    # Strip version suffix for output filename (2602.15763v1 → 2602.15763)
+    import re as _re
+    arxiv_id_base = _re.sub(r'v\d+$', '', arxiv_id)
 
     logger.info(f"Starting translation for {arxiv_id} using {model_name}")
 
@@ -226,7 +229,7 @@ def main():
         logger.info(f"Compile timeout: {compile_timeout}s (based on {total_out:,} output tokens)")
         log_ipc(f"PROGRESS:COMPILING:Compiling PDF (timeout {compile_timeout}s)...")
 
-        final_pdf = args.output or f"{arxiv_id}_zh.pdf"
+        final_pdf = args.output or f"{arxiv_id_base}_zh.pdf"
 
         success, compile_error = compile_with_fix_loop(
             source_dir=source_zh_dir,

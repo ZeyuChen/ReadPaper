@@ -948,13 +948,8 @@ async def get_paper(
         # Known path for original PDF
         candidates = [f"{arxiv_id}/{arxiv_id}.pdf"]
     elif file_type == "translated":
-        # Translated PDF naming conventions:
-        # - {arxiv_id}_zh.pdf (base, e.g. 2602.15763_zh.pdf)
-        # - {arxiv_id}v{N}_zh.pdf (versioned, e.g. 2602.15763v1_zh.pdf)
+        # Translated PDF: always {arxiv_id}_zh.pdf, matching the user-provided ID
         candidates = [f"{arxiv_id}/{arxiv_id}_zh.pdf"]
-        # Also try versioned variants (v1 through v5)
-        for v in range(1, 6):
-            candidates.append(f"{arxiv_id}/{arxiv_id}v{v}_zh.pdf")
     else:
         raise HTTPException(status_code=400, detail="file_type must be 'original' or 'translated'")
 
