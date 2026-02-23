@@ -38,12 +38,14 @@ async def translate_one_file(
     filepath: str,
     file_idx: int,
     total_files: int,
+    main_tex_path: str = "",
 ) -> tuple[str, int, int, bool]:
     """
     Translate a single .tex file in-place.
     Returns (filename, in_tokens, out_tokens, success).
     """
     filename = os.path.basename(filepath)
+    is_main_file = (os.path.abspath(filepath) == os.path.abspath(main_tex_path)) if main_tex_path else False
 
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -55,16 +57,21 @@ async def translate_one_file(
             log_ipc(f"PROGRESS:FILE_DONE:{filename}:ok")
             return filename, 0, 0, True
 
-        # Translate entire file
-        translated, in_tok, out_tok = await translator.translate_file(content, filename)
+        # Translate entire file (with integrity validation)
+        translated, in_tok, out_tok, is_valid = await translator.translate_file(
+            content, filename, is_main_file=is_main_file
+        )
 
-        # Write back
+        # Write back (even if not valid — better to have a partial translation
+        # than no translation at all for compilation)
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(translated)
 
-        # Report progress
+        # Report progress (include validity for cache decisions upstream)
+        validity_tag = "valid" if is_valid else "invalid"
         log_ipc(f"PROGRESS:TRANSLATING:{file_idx}:{total_files}:✅ {filename} | In {in_tok:,}/Out {out_tok:,} tokens")
         log_ipc(f"PROGRESS:TOKENS_TOTAL:{in_tok}:{out_tok}:{filename}")
+        log_ipc(f"PROGRESS:INTEGRITY:{filename}:{validity_tag}")
         log_ipc(f"PROGRESS:FILE_DONE:{filename}:ok")
 
         return filename, in_tok, out_tok, True
@@ -180,7 +187,10 @@ def main():
 
             async def guarded_translate(filepath, idx):
                 async with semaphore:
-                    return await translate_one_file(translator, filepath, idx, total_files)
+                    return await translate_one_file(
+                        translator, filepath, idx, total_files,
+                        main_tex_path=main_tex,
+                    )
 
             tasks = [
                 guarded_translate(f, i + 1)

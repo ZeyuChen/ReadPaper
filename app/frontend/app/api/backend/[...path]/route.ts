@@ -7,14 +7,19 @@
  * `next build`, falling back to localhost:8000 — which breaks Cloud Run.
  *
  * This API route runs at REQUEST TIME and can read the runtime env var.
+ * It also injects the authenticated user's email as x-user-email header
+ * so the backend can identify the user without decoding NextAuth JWTs.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/auth';
 
 // This is the runtime backend URL — read from env at request time, not build time.
 const BACKEND_URL =
     process.env.API_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
     'http://localhost:8000';
+
+const DISABLE_AUTH = process.env.NEXT_PUBLIC_DISABLE_AUTH === 'true';
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
     return proxyRequest(request, await params);
@@ -46,6 +51,22 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
     for (const [key, value] of request.headers.entries()) {
         if (key.toLowerCase() === 'host') continue;
         headers.set(key, value);
+    }
+
+    // ── Inject authenticated user email for backend identification ──────
+    // The backend reads x-user-email to identify the user without needing
+    // to decode NextAuth session tokens itself.
+    if (!DISABLE_AUTH) {
+        try {
+            const session = await auth();
+            if (session?.user?.email) {
+                headers.set('x-user-email', session.user.email);
+            }
+        } catch (e) {
+            // If auth() fails, let the request through without the header.
+            // The backend will reject it with 401 if auth is required.
+            console.warn('[Backend Proxy] Failed to get session:', e);
+        }
     }
 
     let body: BodyInit | null = null;

@@ -76,3 +76,28 @@ Recent advances in large language models (LLMs) have demonstrated remarkable cap
     \item 该算法在 MMLU 上达到了 95\% 的准确率（见表~\ref{tab:results}）。
     \item 我们使用 \textit{Adam} 优化器，其中 $\beta_1=0.9$。
 \end{itemize}
+
+## NEGATIVE INSTRUCTIONS (ABSOLUTE PROHIBITIONS — ZERO TOLERANCE)
+
+### 1. DO NOT Translate Appendices and Code/Prompt Blocks
+- Any content after \appendix MUST remain in **original English** — do NOT translate it.
+- Code blocks inside lstlisting, verbatim, minted, algorithm environments → keep 100% original English.
+- Prompt examples, system messages, or any quoted text that represents a prompt/instruction for an AI system → keep English original untouched.
+- Example/demo text inside \begin{quote} that represents prompts or model outputs → keep English.
+- If a section title says "Appendix" or is inside the appendix, keep all its content in English.
+
+### 2. DO NOT Alter Metadata Dates or Timestamps
+- \date{...} content MUST remain **exactly** unchanged — never modify, reformat, or replace dates.
+- Dates in author blocks, headers, footers, or footnotes about submission/revision → preserve verbatim.
+- NEVER replace a paper's original date with today's date or any fabricated date.
+- Version/revision markers like "v2, January 2025" or "Last updated: 2025-01-15" → keep exactly as-is.
+- Examples that MUST be preserved exactly:
+  ✓ \date{December 15, 2024}  → output \date{December 15, 2024}
+  ✓ "Published on March 3, 2025" → output "Published on March 3, 2025"
+  ✓ "First draft: June 2024. Revised: v2, January 2025" → keep as-is
+
+### 3. DO NOT Translate Technical Identifiers
+- Model names: GPT-4, Claude, Gemini, LLaMA, Qwen, DeepSeek, Mistral, etc. → keep English.
+- Dataset/benchmark names: MMLU, HellaSwag, GSM8K, HumanEval, MATH, ARC, etc. → keep English.
+- Method/framework names: LoRA, QLoRA, RLHF, DPO, GRPO, vLLM, FlashAttention, etc. → keep English.
+- Software/tool names: PyTorch, TensorFlow, Hugging Face, etc. → keep English.

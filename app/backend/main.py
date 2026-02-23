@@ -25,7 +25,9 @@ from typing import Dict, TypedDict, Optional, List
 
 from .services.storage import LocalStorageService, GCSStorageService, StorageService
 from .services.library import LibraryManager
+from .services.cache import TranslationCache
 from .services.auth import get_current_user
+from .services.rate_limiter import check_translate_rate_limit
 from .logging_config import setup_logger
 
 logger = setup_logger("main_api")
@@ -200,6 +202,9 @@ else:
     logger.info("Using Local Storage Service.")
     root_storage = LocalStorageService(PAPER_STORAGE_ROOT)
 
+# Global translation cache (shared across all users)
+translation_cache = TranslationCache(root_storage)
+
 # Dependency Injection for Per-Request Services
 
 def get_storage_service(user_id: str = Depends(get_current_user)) -> StorageService:
@@ -276,6 +281,9 @@ def update_file_status(task_key: str, filename: str, file_status: str,
         entry["batches_total"] = batches_total
     files[filename] = entry
     TASK_STATUS[task_key] = {**current, "files": files}
+
+# Track per-file integrity status for cache decisions
+_FILE_INTEGRITY: dict[str, dict[str, bool]] = {}
 
 async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user_id: str, storage_service: StorageService, library_manager: LibraryManager):
     """
@@ -430,6 +438,18 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user
                             task_key, fname.strip(),
                             "done" if outcome.strip() == "ok" else "failed"
                         )
+
+                # ── Per-file integrity status ──────────────────────────────
+                elif code == "INTEGRITY":
+                    # Format: INTEGRITY:{filename}:{valid|invalid}
+                    try:
+                        i_parts = rest.split(":", 1)
+                        if len(i_parts) == 2:
+                            i_fname, i_status = i_parts[0].strip(), i_parts[1].strip()
+                            _FILE_INTEGRITY.setdefault(task_key, {})[i_fname] = (i_status == "valid")
+                            logger.info(f"[integrity] {i_fname}: {i_status}")
+                    except Exception:
+                        pass
 
 
                 # ── Per-file token summary ─────────────────────────────────
@@ -625,6 +645,36 @@ async def run_translation_stream(arxiv_url: str, model: str, arxiv_id: str, user
                                      logger.warning(f"tex upload failed: {gcs_key}: {tex_e}")
              logger.info(f"Uploaded {tex_upload_count} tex files total")
 
+             # ── Write translated files to global cache ─────────────────────
+             # Only cache files that passed integrity validation
+             file_integrity = _FILE_INTEGRITY.get(task_key, {})
+             source_zh_tex_dir = os.path.join(workspace_dir_tex, "source_zh")
+             if os.path.isdir(source_zh_tex_dir):
+                 cache_count = 0
+                 for root_d, _, cache_files in os.walk(source_zh_tex_dir):
+                     for fname in cache_files:
+                         if fname.endswith(".tex"):
+                             is_valid = file_integrity.get(fname, False)
+                             if is_valid:
+                                 local_path = os.path.join(root_d, fname)
+                                 try:
+                                     with open(local_path, 'r', encoding='utf-8', errors='ignore') as cf:
+                                         translated_content = cf.read()
+                                     await translation_cache.put_cache(
+                                         arxiv_id, fname, translated_content,
+                                         is_valid=True, model=model,
+                                     )
+                                     cache_count += 1
+                                 except Exception as cache_e:
+                                     logger.warning(f"Cache write failed for {fname}: {cache_e}")
+                             else:
+                                 logger.info(f"Skipping cache for {fname} (integrity={is_valid})")
+                 if cache_count > 0:
+                     await translation_cache.mark_complete(arxiv_id)
+                     logger.info(f"Cached {cache_count} valid translated files for {arxiv_id}")
+             # Clean up integrity tracking
+             _FILE_INTEGRITY.pop(task_key, None)
+
              # Update Library
              meta = fetch_arxiv_metadata(arxiv_id)
              await library_manager.add_paper(
@@ -730,41 +780,43 @@ async def get_metadata(arxiv_id: str):
     return meta
 
 @app.post("/translate")
-
 async def translate_paper(
     request: TranslationRequest, 
     background_tasks: BackgroundTasks,
-    user_id: str = Depends(get_current_user),
+    user_id: str = Depends(check_translate_rate_limit),
     storage_service: StorageService = Depends(get_storage_service),
     library_manager: LibraryManager = Depends(get_library_manager)
 ):
     parts = request.arxiv_url.split("/")
-    # Strip .pdf extension and version suffix (e.g. 2602.15763v1 → 2602.15763)
+    # Strip .pdf extension but PRESERVE version suffix (e.g. 2602.15763v1)
+    # Version is needed for cache keying — different versions have different content
+    arxiv_id = parts[-1].replace(".pdf", "")
+    # Extract base ID (without version) for library/storage lookups
     import re as _re
-    arxiv_id = _re.sub(r'v\d+$', '', parts[-1].replace(".pdf", ""))
+    arxiv_id_base = _re.sub(r'v\d+$', '', arxiv_id)
     
-    # Check Library
-    paper = await library_manager.get_paper(arxiv_id)
+    # Check Library (use base ID for library lookups)
+    paper = await library_manager.get_paper(arxiv_id_base)
     if paper:
         # Simplified check: if exists, return it
-        return {"message": "Already completed", "arxiv_id": arxiv_id, "status": "completed"}
+        return {"message": "Already completed", "arxiv_id": arxiv_id_base, "status": "completed"}
     
-    task_key = f"{user_id}:{arxiv_id}"
+    task_key = f"{user_id}:{arxiv_id_base}"
 
     # Guard against concurrent translations of the same paper
     existing = TASK_STATUS.get(task_key, {})
     if existing.get("status") in ("processing", "queued"):
-        return {"message": "Already in progress", "arxiv_id": arxiv_id, "status": existing.get("status")}
+        return {"message": "Already in progress", "arxiv_id": arxiv_id_base, "status": existing.get("status")}
 
     update_status(task_key, "queued", "Started")
     
     background_tasks.add_task(
         run_translation_wrapper, 
-        request.arxiv_url, request.model, arxiv_id,
+        request.arxiv_url, request.model, arxiv_id_base,
         user_id, storage_service, library_manager
     )
     
-    return {"message": "Started", "arxiv_id": arxiv_id}
+    return {"message": "Started", "arxiv_id": arxiv_id_base}
 
 @app.get("/status/{arxiv_id}")
 async def get_status(

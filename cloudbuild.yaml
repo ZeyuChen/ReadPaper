@@ -125,7 +125,7 @@ steps:
       - '--max-instances'
       - '3'
       - '--set-env-vars'
-      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs,GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID}'
+      - 'GCS_BUCKET_NAME=${_BUCKET_NAME},GEMINI_API_KEY=${_GEMINI_API_KEY},STORAGE_TYPE=gcs,GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID},DISABLE_AUTH=false'
     waitFor: ['Push Backend']
     id: 'Deploy Backend'
 
@@ -149,7 +149,7 @@ steps:
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
-          --set-env-vars "API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=${_NEXTAUTH_SECRET},AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL"
+          --set-env-vars "API_URL=$$BACKEND_URL,NEXT_PUBLIC_API_URL=$$BACKEND_URL,AUTH_TRUST_HOST=true,NEXTAUTH_SECRET=${_NEXTAUTH_SECRET},AUTH_GOOGLE_ID=${_GOOGLE_CLIENT_ID},AUTH_GOOGLE_SECRET=${_GOOGLE_CLIENT_SECRET},NEXTAUTH_URL=$$FRONTEND_URL,AUTH_URL=$$FRONTEND_URL,NEXT_PUBLIC_DISABLE_AUTH=false"
     waitFor: ['Push Frontend', 'Deploy Backend']
     id: 'Deploy Frontend'
 

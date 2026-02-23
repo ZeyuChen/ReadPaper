@@ -13,6 +13,7 @@ import os
 import re
 import random
 from .logging_utils import logger
+from .integrity import validate_translation
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -66,18 +67,20 @@ class GeminiTranslator:
         self,
         content: str,
         filename: str = "file.tex",
-    ) -> tuple[str, int, int]:
+        is_main_file: bool = False,
+    ) -> tuple[str, int, int, bool]:
         """
         Translate an entire .tex file.
 
         Args:
             content: Full LaTeX file content (comments already stripped).
             filename: For logging purposes.
+            is_main_file: Whether this is the main .tex file (for integrity checks).
 
         Returns:
-            (translated_content, input_tokens, output_tokens)
+            (translated_content, input_tokens, output_tokens, is_valid)
 
-        On unrecoverable failure, returns the original content unchanged.
+        On unrecoverable failure, returns the original content unchanged with is_valid=False.
         """
         total_in, total_out = 0, 0
 
@@ -114,7 +117,7 @@ class GeminiTranslator:
                     if attempt < _MAX_RETRIES:
                         await _backoff_sleep(attempt)
                         continue
-                    return content, total_in, total_out
+                    return content, total_in, total_out, False
 
                 # Strip markdown fences if present
                 resp_text = _clean_markdown_fences(resp_text)
@@ -125,14 +128,37 @@ class GeminiTranslator:
                     if attempt < _MAX_RETRIES:
                         await _backoff_sleep(attempt)
                         continue
-                    return content, total_in, total_out
+                    return content, total_in, total_out, False
+
+                # ── Integrity validation ──────────────────────────────────
+                is_valid, reason = validate_translation(
+                    original=content,
+                    translated=resp_text,
+                    filename=filename,
+                    is_main_file=is_main_file,
+                )
+                if not is_valid:
+                    logger.warning(
+                        f"[{filename}] Integrity check FAILED: {reason} "
+                        f"(attempt {attempt})"
+                    )
+                    if attempt < _MAX_RETRIES:
+                        await _backoff_sleep(attempt)
+                        continue
+                    # Last attempt failed integrity — return the translation
+                    # but flag it as invalid so it won't be cached
+                    logger.error(
+                        f"[{filename}] All attempts failed integrity checks. "
+                        f"Using last translation but NOT caching."
+                    )
+                    return resp_text, total_in, total_out, False
 
                 logger.info(
-                    f"[{filename}] Translated OK — "
+                    f"[{filename}] Translated OK (integrity ✓) — "
                     f"In: {in_tok:,} / Out: {out_tok:,} tokens, "
                     f"ratio: {len(resp_text)/max(len(content),1):.2f}"
                 )
-                return resp_text, total_in, total_out
+                return resp_text, total_in, total_out, True
 
             except Exception as e:
                 err_str = str(e).lower()
@@ -144,7 +170,7 @@ class GeminiTranslator:
                     continue
                 # Give up — return original content
                 logger.error(f"[{filename}] All {_MAX_RETRIES} attempts failed, keeping original")
-                return content, total_in, total_out
+                return content, total_in, total_out, False
 
         # Should not reach here
-        return content, total_in, total_out
+        return content, total_in, total_out, False

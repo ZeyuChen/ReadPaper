@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSession, signOut } from 'next-auth/react';
 import SplitView from '@/components/SplitView';
 import { Search, Loader2, Trash2, LogOut, BookOpen, Sparkles, ChevronRight, X, RefreshCw, Shield, CheckCircle2, Circle, XCircle, Loader, FileText, ChevronLeft, DownloadCloud, Languages, FileCheck2, Check } from 'lucide-react';
 
@@ -123,8 +124,16 @@ export default function ClientHome({ config }: ClientHomeProps) {
     );
 
     const getAuthHeaders = (): HeadersInit => {
+        // Auth is handled via cookies (NextAuth session) — no explicit token needed.
+        // The /api/backend proxy injects x-user-email from the session automatically.
         return { 'Content-Type': 'application/json' };
     };
+
+    // Session info (for display only — auth is cookie-based)
+    const { data: session } = useSession();
+    const userName = session?.user?.name || 'Anonymous';
+    const userEmail = session?.user?.email || '';
+    const userImage = session?.user?.image || '';
 
     useEffect(() => {
         fetchLibrary();
@@ -407,12 +416,31 @@ export default function ClientHome({ config }: ClientHomeProps) {
         <div className="flex min-h-screen flex-col items-center p-8 bg-gradient-to-br from-slate-50 to-blue-50/30 relative font-sans">
             <div className="absolute top-6 right-8 flex items-center gap-3">
                 <div className="flex flex-col items-end mr-1">
-                    <span className="text-xs font-medium text-gray-700">Anonymous</span>
-                    <span className="text-[10px] text-gray-500">auth disabled</span>
+                    <span className="text-xs font-medium text-gray-700">{userName}</span>
+                    <span className="text-[10px] text-gray-500">{userEmail || (config.disableAuth ? 'auth disabled' : '')}</span>
                 </div>
-                <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
-                    A
-                </div>
+                {userImage ? (
+                    <Image
+                        src={userImage}
+                        alt={userName}
+                        width={36}
+                        height={36}
+                        className="rounded-full border border-gray-200"
+                    />
+                ) : (
+                    <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
+                        {userName.charAt(0).toUpperCase()}
+                    </div>
+                )}
+                {!config.disableAuth && (
+                    <button
+                        onClick={() => signOut()}
+                        className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 transition-colors"
+                        title="Sign Out"
+                    >
+                        <LogOut size={14} />
+                    </button>
+                )}
             </div>
 
             <div className="w-full max-w-3xl mt-16 space-y-8 text-center">
