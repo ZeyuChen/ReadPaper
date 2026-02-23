@@ -497,14 +497,48 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
 
                     {/* Downloads */}
                     <div className="flex gap-1.5 flex-shrink-0">
-                        <a href={originalUrl} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-[#3c4043] bg-white border border-[#dadce0] rounded-md hover:bg-[#f8f9fa] transition">
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const res = await fetch(originalUrl);
+                                    if (!res.ok) return;
+                                    const ct = res.headers.get('content-type') || '';
+                                    if (ct.includes('application/json')) {
+                                        const data = await res.json();
+                                        if (data.url) { window.open(data.url, '_blank'); return; }
+                                    }
+                                    const blob = await res.blob();
+                                    const u = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = u; a.download = `${arxivId}.pdf`; a.click();
+                                    URL.revokeObjectURL(u);
+                                } catch (e) { console.error('Download failed', e); }
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-[#3c4043] bg-white border border-[#dadce0] rounded-md hover:bg-[#f8f9fa] transition cursor-pointer"
+                        >
                             <Download size={11} /> EN
-                        </a>
-                        <a href={translatedUrl} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-[#1a73e8] rounded-md hover:bg-[#1557b0] transition shadow-sm">
+                        </button>
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const res = await fetch(translatedUrl);
+                                    if (!res.ok) return;
+                                    const ct = res.headers.get('content-type') || '';
+                                    if (ct.includes('application/json')) {
+                                        const data = await res.json();
+                                        if (data.url) { window.open(data.url, '_blank'); return; }
+                                    }
+                                    const blob = await res.blob();
+                                    const u = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = u; a.download = `${arxivId}_zh.pdf`; a.click();
+                                    URL.revokeObjectURL(u);
+                                } catch (e) { console.error('Download failed', e); }
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-[#1a73e8] rounded-md hover:bg-[#1557b0] transition shadow-sm cursor-pointer"
+                        >
                             <Download size={11} /> 中文
-                        </a>
+                        </button>
                     </div>
                 </div>
 
