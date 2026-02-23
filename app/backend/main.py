@@ -1283,3 +1283,176 @@ async def admin_delete_user(
         logger.error(f"Admin delete user failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ── Admin: LaTeX Inspector Endpoints ──────────────────────────────────────────
+
+@app.get("/admin/papers/{target_user_id}/{arxiv_id}/texfiles")
+async def admin_list_texfiles(
+    target_user_id: str,
+    arxiv_id: str,
+    admin_id: str = Depends(require_admin),
+):
+    """List all .tex files (original + translated) for a paper."""
+    user_storage = root_storage.get_user_storage(target_user_id)
+
+    def _list(prefix: str):
+        files = user_storage.list_files(prefix)
+        return [
+            os.path.basename(f) for f in files
+            if f.endswith(".tex")
+        ]
+
+    original = await asyncio.to_thread(_list, f"{arxiv_id}/tex/original/")
+    translated = await asyncio.to_thread(_list, f"{arxiv_id}/tex/translated/")
+    return {"original": sorted(original), "translated": sorted(translated)}
+
+
+@app.get("/admin/papers/{target_user_id}/{arxiv_id}/texfile")
+async def admin_get_texfile(
+    target_user_id: str,
+    arxiv_id: str,
+    name: str,
+    type: str = "translated",
+    admin_id: str = Depends(require_admin),
+):
+    """Get a single .tex file content for admin preview."""
+    if type not in ("original", "translated"):
+        raise HTTPException(status_code=400, detail="type must be 'original' or 'translated'")
+
+    user_storage = root_storage.get_user_storage(target_user_id)
+    gcs_key = f"{arxiv_id}/tex/{type}/{name}"
+    try:
+        content_bytes = await user_storage.get_file(gcs_key)
+        if content_bytes is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {gcs_key}")
+        content = content_bytes.decode("utf-8", errors="replace")
+        return {"filename": name, "type": type, "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin texfile fetch failed ({gcs_key}): {e}")
+        raise HTTPException(status_code=404, detail=f"File not available: {name}")
+
+
+@app.get("/admin/papers/{target_user_id}/{arxiv_id}/tex-tar")
+async def admin_download_tex_tar(
+    target_user_id: str,
+    arxiv_id: str,
+    admin_id: str = Depends(require_admin),
+):
+    """Download all .tex files (original + translated) as a .tar.gz archive."""
+    import io
+    import tarfile
+
+    user_storage = root_storage.get_user_storage(target_user_id)
+    buf = io.BytesIO()
+
+    def _build_tar():
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for subdir in ("original", "translated"):
+                prefix = f"{arxiv_id}/tex/{subdir}/"
+                files = user_storage.list_files(prefix)
+                for filepath in files:
+                    if not filepath.endswith(".tex"):
+                        continue
+                    try:
+                        if isinstance(user_storage, GCSStorageService):
+                            gcs_path = user_storage._get_gcs_path(filepath)
+                            blob = user_storage.bucket.blob(gcs_path)
+                            data = blob.download_as_bytes()
+                        else:
+                            full = user_storage._get_full_path(filepath)
+                            with open(full, "rb") as f:
+                                data = f.read()
+                        # Archive path: {arxiv_id}/original/main.tex or {arxiv_id}/translated/main.tex
+                        basename = os.path.basename(filepath)
+                        arcname = f"{arxiv_id}/{subdir}/{basename}"
+                        info = tarfile.TarInfo(name=arcname)
+                        info.size = len(data)
+                        tar.addfile(info, io.BytesIO(data))
+                    except Exception as e:
+                        logger.warning(f"Skipping {filepath}: {e}")
+
+    await asyncio.to_thread(_build_tar)
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{arxiv_id}_tex.tar.gz"',
+        },
+    )
+
+
+# ── Admin: GCP Cloud Run Logs ─────────────────────────────────────────────────
+
+@app.get("/admin/logs")
+async def admin_get_logs(
+    service: str = "backend",
+    severity: str = "DEFAULT",
+    limit: int = 100,
+    hours: int = 1,
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Query Cloud Run logs for the specified service.
+    
+    Query params:
+        service: 'backend' or 'frontend'
+        severity: 'ERROR', 'WARNING', 'INFO', 'DEFAULT' (all)
+        limit: max entries (default 100, max 500)
+        hours: lookback period in hours (default 1, max 168)
+    """
+    limit = min(limit, 500)
+    hours = min(hours, 168)
+
+    service_name = f"readpaper-{service}"
+
+    try:
+        from google.cloud import logging as cloud_logging
+        import datetime
+
+        def _query():
+            client = cloud_logging.Client()
+
+            # Build filter
+            now = datetime.datetime.utcnow()
+            since = now - datetime.timedelta(hours=hours)
+            timestamp_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            filter_parts = [
+                f'resource.type="cloud_run_revision"',
+                f'resource.labels.service_name="{service_name}"',
+                f'timestamp>="{timestamp_str}"',
+            ]
+            if severity != "DEFAULT":
+                filter_parts.append(f'severity>="{severity}"')
+
+            filter_str = " AND ".join(filter_parts)
+
+            entries = []
+            for entry in client.list_entries(
+                filter_=filter_str,
+                order_by=cloud_logging.DESCENDING,
+                max_results=limit,
+            ):
+                msg = entry.payload if isinstance(entry.payload, str) else str(entry.payload)
+                entries.append({
+                    "timestamp": entry.timestamp.isoformat() if entry.timestamp else "",
+                    "severity": entry.severity or "DEFAULT",
+                    "message": msg[:2000],  # Truncate very long messages
+                    "trace": getattr(entry, "trace", "") or "",
+                })
+            return entries
+
+        entries = await asyncio.to_thread(_query)
+        return {"service": service_name, "entries": entries, "count": len(entries)}
+
+    except ImportError:
+        return {"service": service_name, "entries": [], "count": 0,
+                "error": "google-cloud-logging not installed"}
+    except Exception as e:
+        logger.error(f"Admin logs query failed: {e}")
+        return {"service": service_name, "entries": [], "count": 0,
+                "error": str(e)}

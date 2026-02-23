@@ -100,7 +100,8 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
         const contentType = response.headers.get('content-type') || '';
         const isBinary = contentType.startsWith('application/pdf') ||
             contentType.startsWith('image/') ||
-            contentType.startsWith('application/octet-stream');
+            contentType.startsWith('application/octet-stream') ||
+            contentType.startsWith('application/gzip');
 
         if (isBinary && response.body) {
             return new NextResponse(response.body as any, {

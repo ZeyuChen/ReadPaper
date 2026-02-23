@@ -8,4 +8,4 @@ python-dotenv
 httpx
 pytest
 feedparser
-# Force rebuild for feedparser
+google-cloud-logging
