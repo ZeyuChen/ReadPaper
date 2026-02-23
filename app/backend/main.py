@@ -892,8 +892,8 @@ async def get_paper(
 ):
     """
     Serves the PDF file (original or translated) for a specific paper.
-    For GCS: redirects to a signed URL so the browser downloads directly from GCS.
-    For local: serves the file directly.
+    GCS: streams directly from same-region GCS (~500ms for 6MB).
+    Local: serves from disk via FileResponse.
     """
     if file_type == "original":
         # Known path for original PDF
@@ -917,47 +917,26 @@ async def get_paper(
         raise HTTPException(status_code=404, detail=f"{file_type} PDF not found for {arxiv_id}")
 
     elif isinstance(storage_service, GCSStorageService):
-        # Try each candidate path directly — no listing needed
+        # Try each candidate path directly — no list_files() needed
         for candidate in candidates:
             gcs_path = storage_service._get_gcs_path(candidate)
             blob = storage_service.bucket.blob(gcs_path)
             try:
                 exists = await asyncio.to_thread(blob.exists)
                 if exists:
-                    # Return a signed URL as JSON so the frontend can load the PDF directly
-                    # from GCS. We can't use a 302 redirect because the frontend uses fetch()
-                    # which blocks cross-origin redirects (CORS) to storage.googleapis.com.
-                    import datetime
-                    try:
-                        import google.auth
-                        import google.auth.transport.requests
-                        credentials, _ = google.auth.default()
-                        auth_req = google.auth.transport.requests.Request()
-                        credentials.refresh(auth_req)
-                        
-                        signed_url = blob.generate_signed_url(
-                            expiration=datetime.timedelta(minutes=15),
-                            method="GET",
-                            response_type="application/pdf",
-                            version="v4",
-                            service_account_email=credentials.service_account_email,
-                            access_token=credentials.token,
-                        )
-                        return JSONResponse({"url": signed_url})
-                    except Exception as sign_err:
-                        # Signed URLs require a service account key or IAM signBlob permission.
-                        # If that fails, fall back to proxying the download through the backend.
-                        logger.warning(f"Signed URL generation failed, falling back to proxy: {sign_err}")
-                        filename = os.path.basename(candidate)
-                        blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
-                        return Response(
-                            content=blob_bytes,
-                            media_type="application/pdf",
-                            headers={
-                                "Content-Disposition": f'inline; filename="{filename}"',
-                                "Content-Length": str(len(blob_bytes)),
-                            },
-                        )
+                    # Stream directly from GCS through the backend.
+                    # GCS → Cloud Run is same-region (~500ms for 6MB).
+                    # CPU throttling is disabled so background I/O is fast.
+                    filename = os.path.basename(candidate)
+                    blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
+                    return Response(
+                        content=blob_bytes,
+                        media_type="application/pdf",
+                        headers={
+                            "Content-Disposition": f'inline; filename="{filename}"',
+                            "Content-Length": str(len(blob_bytes)),
+                        },
+                    )
             except HTTPException:
                 raise
             except Exception as e:

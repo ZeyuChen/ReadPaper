@@ -101,19 +101,6 @@ function AuthenticatedPdfViewer({
                     throw new Error(errBody.detail || `Server error (${res.status})`);
                 }
 
-                const contentType = res.headers.get('content-type') || '';
-
-                // GCS signed URL response: backend returns JSON { url: "https://storage.googleapis.com/..." }
-                if (contentType.includes('application/json')) {
-                    const data = await res.json();
-                    if (data.url) {
-                        // Use the signed URL directly — no need to proxy through backend
-                        if (isMounted) setBlobUrl(data.url);
-                        return;
-                    }
-                }
-
-                // Fallback: direct PDF blob (local dev or when signed URL fails)
                 const blob = await res.blob();
                 objectUrl = URL.createObjectURL(blob);
                 if (isMounted) setBlobUrl(objectUrl);
@@ -497,48 +484,14 @@ export default function SplitView({ arxivId, onPaperSelect, onBack }: SplitViewP
 
                     {/* Downloads */}
                     <div className="flex gap-1.5 flex-shrink-0">
-                        <button
-                            onClick={async () => {
-                                try {
-                                    const res = await fetch(originalUrl);
-                                    if (!res.ok) return;
-                                    const ct = res.headers.get('content-type') || '';
-                                    if (ct.includes('application/json')) {
-                                        const data = await res.json();
-                                        if (data.url) { window.open(data.url, '_blank'); return; }
-                                    }
-                                    const blob = await res.blob();
-                                    const u = URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.href = u; a.download = `${arxivId}.pdf`; a.click();
-                                    URL.revokeObjectURL(u);
-                                } catch (e) { console.error('Download failed', e); }
-                            }}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-[#3c4043] bg-white border border-[#dadce0] rounded-md hover:bg-[#f8f9fa] transition cursor-pointer"
-                        >
+                        <a href={originalUrl} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-[#3c4043] bg-white border border-[#dadce0] rounded-md hover:bg-[#f8f9fa] transition">
                             <Download size={11} /> EN
-                        </button>
-                        <button
-                            onClick={async () => {
-                                try {
-                                    const res = await fetch(translatedUrl);
-                                    if (!res.ok) return;
-                                    const ct = res.headers.get('content-type') || '';
-                                    if (ct.includes('application/json')) {
-                                        const data = await res.json();
-                                        if (data.url) { window.open(data.url, '_blank'); return; }
-                                    }
-                                    const blob = await res.blob();
-                                    const u = URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.href = u; a.download = `${arxivId}_zh.pdf`; a.click();
-                                    URL.revokeObjectURL(u);
-                                } catch (e) { console.error('Download failed', e); }
-                            }}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-[#1a73e8] rounded-md hover:bg-[#1557b0] transition shadow-sm cursor-pointer"
-                        >
+                        </a>
+                        <a href={translatedUrl} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-[#1a73e8] rounded-md hover:bg-[#1557b0] transition shadow-sm">
                             <Download size={11} /> 中文
-                        </button>
+                        </a>
                     </div>
                 </div>
 
