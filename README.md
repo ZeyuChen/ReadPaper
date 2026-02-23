@@ -1,174 +1,160 @@
 
-
 <div align="center">
   <img src="logo.svg" width="120" alt="ReadPaper Logo" />
-  <h1>ReadPaper: Bilingual AI ArXiv Reader</h1>
-  <p><strong>Powered by Gemini 3.0 Flash</strong></p>
+  <h1>ReadPaper</h1>
+  <p><strong>AI-powered bilingual arXiv reader — translate any paper to Chinese with one click</strong></p>
+  <p>
+    <a href="https://readpaper-frontend-989182646968.us-central1.run.app">Live Demo</a> ·
+    <a href="#-quick-start">Quick Start</a> ·
+    <a href="ARCHITECTURE.md">Architecture</a>
+  </p>
 </div>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
-![Next.js](https://img.shields.io/badge/next.js-14+-black.svg)
-![GCP](https://img.shields.io/badge/Google_Cloud-Ready-4285F4.svg)
-![Model](https://img.shields.io/badge/Gemini-3.0_Flash-blue?logo=google)
+<p align="center">
+  <img src="https://img.shields.io/badge/Gemini_3.0_Flash-1M_context-4285F4?logo=google&logoColor=white" />
+  <img src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Next.js_14-black?logo=next.js&logoColor=white" />
+  <img src="https://img.shields.io/badge/Google_Cloud-Run-4285F4?logo=googlecloud&logoColor=white" />
+  <img src="https://img.shields.io/badge/license-Apache_2.0-blue" />
+</p>
 
-**ReadPaper** is an open-source tool that translates arXiv papers from English to Chinese while **preserving the original LaTeX layout**, equations, citations, figures, and tables. It leverages **Gemini 3.0 Flash** with its 1M context window for whole-file translation.
+---
 
-> [!IMPORTANT]
-> This project uses **Gemini 3.0 Flash** (`gemini-3-flash-preview`) exclusively. Each `.tex` file is translated in a single API call — no chunking, no batching, no text-node extraction.
+ReadPaper downloads an arXiv paper's LaTeX source, translates every `.tex` file to Chinese **in a single Gemini API call** per file, recompiles with XeLaTeX, and presents the result in a side-by-side split-view reader. No text extraction, no chunking, no layout corruption.
 
-## 🚀 Key Features
+## ✨ Why ReadPaper?
 
-- **Whole-File Translation**: Each `.tex` file is sent to Gemini as-is (complete LaTeX source), translated to Chinese in one API call. No text extraction, no batching, no reassembly corruption.
-- **CJK-Ready Output**: Translation prompt instructs Gemini to add `\usepackage[UTF8]{ctex}` and preserve all LaTeX commands.
-- **Smart Structure Analysis** (`analyzer.py`): Classifies files as main/sub/macro/style, builds `\input` dependency graph, identifies the main `.tex` entrypoint.
-- **AI Compile Fix Loop** (`compiler.py`): Up to 3 iterative compile attempts with Gemini-powered error fixing. Parses error log → fixes the offending file → retries.
-- **Dynamic Compile Timeout**: Base 300s + 60s per 10k output tokens, capped at 1200s. Adapts to paper size automatically.
-- **Translation Cache**: GCS-backed cache with integrity validation — previously translated papers are served instantly.
-- **Token Usage Tracking**: Real-time Gemini API token usage displayed in frontend during translation.
-- **Admin Dashboard**: Full admin panel with user management, paper management (delete), and system overview.
-- **GCS Signed URL Delivery**: PDFs served via time-limited signed URLs directly from GCS — no backend proxy bottleneck.
-- **Cloud Scale**: Google Cloud Run with `--no-cpu-throttling` for reliable background task execution + GCS storage.
-- **Split-View Reader**: Side-by-side bilingual PDF viewing in Next.js frontend.
-- **Google OAuth**: Secure authentication via Google Sign-In with per-user paper libraries.
+| Problem | ReadPaper's Approach |
+|---------|---------------------|
+| PDF translators break equations and formatting | Translates **raw LaTeX source** — math, citations, figures stay pixel-perfect |
+| Chunk-based approaches corrupt cross-references | **Whole-file translation** — each `.tex` file sent as-is in one API call |
+| Compilation errors after translation | **AI-powered fix loop** — Gemini auto-fixes LaTeX errors, retries up to 3× |
+| Slow PDF delivery through backend proxies | **GCS signed URLs** — browser downloads directly from storage (1 hop) |
 
-## 🏗️ Architecture
-
-```
-User → Next.js Frontend → FastAPI Backend
-                                ↓
-                    ┌─── Translation Pipeline ──────────────────┐
-                    │                                            │
-                    │  Step 1: Download + Extract Source          │
-                    │     └─ arXiv e-print → tar.gz → workspace │
-                    │                                            │
-                    │  Step 2: PaperAnalyzer                     │
-                    │     └─ Classify files, find main .tex      │
-                    │                                            │
-                    │  Step 3: Whole-File Translation             │
-                    │     └─ Each .tex → Gemini API → Chinese    │
-                    │     └─ asyncio.gather() for concurrency    │
-                    │                                            │
-                    │  Step 4: Compile + AI Fix Loop              │
-                    │     └─ latexmk -xelatex (up to 3 tries)   │
-                    │     └─ Gemini fixes errors between retries │
-                    └────────────────────────────────────────────┘
-                                ↓
-                     GCS / Local Storage → Signed URL → Browser
-```
-
-## 🧠 How Translation Works
-
-### Whole-File Approach
-
-Each `.tex` file is translated in a **single Gemini API call** with the full file content as input. The prompt instructs the model to:
-1. Translate all human-readable English text to Chinese
-2. Preserve all LaTeX commands, environments, labels, citations, and math exactly
-3. Add `\usepackage[UTF8]{ctex}` to the main document if not present
-4. Keep the file structure byte-compatible (same number of environments, same nesting)
-
-This avoids all the problems of text extraction + reassembly: no offset drift, no broken environments, no missing citations.
-
-### Concurrency
-
-Translation uses `asyncio.gather()` with a `Semaphore` to process multiple `.tex` files in parallel (default concurrency: 4). Files are translated independently, then the whole project is compiled as a unit.
-
-### Compile + AI Fix Loop
-
-After translation, the project is compiled with `latexmk -xelatex`:
-1. On failure, the error log is parsed to identify the failing file and error type
-2. Gemini is asked to fix the specific file
-3. Compilation is retried (up to 3 attempts)
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | ✅ | Gemini API key from [AI Studio](https://aistudio.google.com/) |
-| `STORAGE_TYPE` | No | `local` (default) or `gcs` |
-| `GCS_BUCKET_NAME` | For GCS | GCS bucket name |
-| `GOOGLE_CLIENT_ID` | For auth | Google OAuth 2.0 Client ID |
-| `MAX_CONCURRENT_REQUESTS` | No | Concurrent Gemini API calls (default: 4) |
-| `DISABLE_AUTH` | No | Set `true` for local dev (skips OAuth) |
+## 🚀 Quick Start
 
 ### Local Development
 
 ```bash
-cp .env.example .env
-# Set GEMINI_API_KEY and DISABLE_AUTH=true
+git clone https://github.com/ZeyuChen/ReadPaper.git && cd ReadPaper
+cp .env.example .env  # Set GEMINI_API_KEY, DISABLE_AUTH=true
 ./run_conda_local.sh
 ```
 
-### Cloud Deployment
+### Cloud Deployment (Google Cloud)
 
 ```bash
-gcloud builds submit \
-  --config=cloudbuild.yaml \
-  --substitutions=_GEMINI_API_KEY=...,_GOOGLE_CLIENT_ID=...,_GOOGLE_CLIENT_SECRET=...,_NEXTAUTH_SECRET=...
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions="_GEMINI_API_KEY=...,_GOOGLE_CLIENT_ID=...,_GOOGLE_CLIENT_SECRET=...,_NEXTAUTH_SECRET=..."
 ```
 
-Cloud Run backend is configured with:
-- `--cpu=2` — Sufficient CPU for LaTeX compilation
-- `--timeout=900` — 15-minute request timeout for long compilations
-- `--no-cpu-throttling` — Background tasks (compilation) get full CPU even after request returns
+## 🏗️ How It Works
+
+```
+ ┌─────────────┐    ┌──────────────────────────────────────────────┐
+ │  Next.js UI  │───▶│              FastAPI Backend                  │
+ │  Split View  │◀───│                                              │
+ │  + OAuth     │    │  1. Download arXiv source (.tar.gz)          │
+ └─────────────┘    │  2. PaperAnalyzer: classify .tex files       │
+        │           │  3. Gemini 3.0 Flash: translate each file    │
+        │           │  4. XeLaTeX compile + AI error fix loop      │
+        ▼           │  5. Upload PDF to GCS                        │
+ ┌─────────────┐    └──────────────────────────────────────────────┘
+ │  GCS Signed  │◀── Cached signed URLs (12-min TTL)
+ │  URL (1 hop) │    No backend proxy for PDF delivery
+ └─────────────┘
+```
+
+### Translation Pipeline
+
+1. **Download** — fetch arXiv e-print tarball, extract source files
+2. **Analyze** — `PaperAnalyzer` classifies files (main/sub/macro/style/bib), builds `\input` dependency graph
+3. **Translate** — each translatable `.tex` file → Gemini 3.0 Flash in one API call, `asyncio.gather()` with semaphore (4 concurrent)
+4. **Compile** — `latexmk -xelatex` with dynamic timeout (300–1200s based on token count)
+5. **Fix Loop** — on compile failure, Gemini reads the error log and fixes the offending file (up to 3 retries)
+
+### What Gets Preserved
+
+| Translated | Untouched |
+|-----------|-----------|
+| Prose, section titles, captions, abstract | `\cite{}`, `\ref{}`, `\label{}` |
+| English comments | All math: `$...$`, `\begin{equation}` |
+| Footnotes, acknowledgments | Package imports, macros, BibTeX |
 
 ## 📦 Project Structure
 
 ```
-├── app/
-│   ├── backend/
-│   │   ├── arxiv_translator/       # Core translation pipeline
-│   │   │   ├── main.py             # Pipeline orchestrator (CLI entry point)
-│   │   │   ├── translator.py       # Gemini whole-file translation
-│   │   │   ├── analyzer.py         # File classification & dependency graph
-│   │   │   ├── compiler.py         # Compile + AI error-fix loop
-│   │   │   ├── downloader.py       # arXiv source download + extraction
-│   │   │   ├── latex_cleaner.py    # Pre-translation LaTeX cleanup
-│   │   │   ├── logging_utils.py    # Structured logging
-│   │   │   └── prompts/
-│   │   │       ├── whole_file_translation_prompt.txt
-│   │   │       └── latex_fix_prompt.txt
-│   │   ├── services/
-│   │   │   ├── auth.py             # Google OAuth verification
-│   │   │   ├── storage.py          # Local / GCS storage abstraction
-│   │   │   ├── library.py          # User paper library (GCS-backed)
-│   │   │   ├── cache.py            # Translation cache with integrity checks
-│   │   │   └── rate_limiter.py     # API rate limiting
-│   │   ├── main.py                 # FastAPI REST API + admin endpoints
-│   │   └── Dockerfile
-│   ├── frontend/
-│   │   ├── components/
-│   │   │   ├── ClientHome.tsx      # Main UI with progress + token display
-│   │   │   └── SplitView.tsx       # Split-view PDF reader
-│   │   ├── app/
-│   │   │   ├── admin/page.tsx      # Admin dashboard
-│   │   │   └── api/backend/        # Backend proxy with streaming
-│   │   └── Dockerfile
-├── tests/
-│   └── test_e2e_pipeline.py        # Mocked E2E test
-├── cloudbuild.yaml                 # Full stack CI/CD
-└── cloudbuild-hotfix.yaml          # Backend-only hotfix deploy
+app/
+├── backend/
+│   ├── main.py                    # FastAPI API (1285 lines) — translate, status, PDF delivery, admin
+│   ├── arxiv_translator/
+│   │   ├── analyzer.py            # .tex file classifier + dependency graph
+│   │   ├── translator.py          # Gemini whole-file translation with retry
+│   │   ├── compiler.py            # XeLaTeX compile + AI error fix loop
+│   │   ├── downloader.py          # arXiv source download + extraction
+│   │   ├── latex_cleaner.py       # Pre-translation comment cleanup
+│   │   └── prompts/               # Translation & fix prompt templates
+│   └── services/
+│       ├── storage.py             # Local / GCS storage abstraction
+│       ├── cache.py               # Translation cache with integrity validation
+│       ├── auth.py                # Google OAuth token verification
+│       ├── library.py             # Per-user paper library (GCS-backed)
+│       └── rate_limiter.py        # API rate limiting
+├── frontend/
+│   ├── components/
+│   │   ├── SplitView.tsx          # Side-by-side PDF reader with zoom & notes
+│   │   └── ClientHome.tsx         # Main UI — paper library, translate, progress
+│   ├── app/
+│   │   ├── admin/page.tsx         # Admin dashboard — users, papers, analytics
+│   │   └── api/backend/           # Proxy with binary streaming support
+│   ├── auth.ts                    # NextAuth.js Google OAuth config
+│   └── middleware.ts              # Auth middleware for route protection
+cloudbuild.yaml                    # Full-stack CI/CD (frontend + backend)
+cloudbuild-hotfix.yaml             # Backend-only rapid deploy
 ```
 
-## 📊 Token Usage
+## ⚙️ Configuration
 
-ReadPaper tracks and displays Gemini API token usage in real-time:
-- **During translation**: Live token counter shown next to elapsed timer
-- **Per-file tracking**: Each file's input/output tokens are reported via IPC
-- **Final summary**: Total tokens displayed when translation completes
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | ✅ | From [Google AI Studio](https://aistudio.google.com/) |
+| `GOOGLE_CLIENT_ID` | For auth | Google OAuth 2.0 Web Client ID |
+| `GOOGLE_CLIENT_SECRET` | For auth | OAuth client secret |
+| `NEXTAUTH_SECRET` | For auth | NextAuth.js session secret |
+| `STORAGE_TYPE` | No | `local` (default) or `gcs` |
+| `GCS_BUCKET_NAME` | For GCS | Google Cloud Storage bucket |
+| `DISABLE_AUTH` | No | `true` for local dev (bypasses OAuth) |
+| `MAX_CONCURRENT_REQUESTS` | No | Parallel Gemini API calls (default: 4) |
 
-Hover the token counter for a breakdown of input vs output tokens.
+## 🔧 Cloud Run Settings
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `--cpu 2` | 2 vCPU | XeLaTeX compilation is CPU-intensive |
+| `--memory 4Gi` | 4 GB | Large papers need memory for TeX processing |
+| `--timeout 900` | 15 min | Long papers with many files need time |
+| `--no-cpu-throttling` | ✔ | Background compilation gets full CPU after response |
+| `--min-instances 1` | 1 | Avoid cold starts |
+
+## 📊 Features at a Glance
+
+- **🔐 Google OAuth** — secure per-user paper libraries
+- **📊 Admin Dashboard** — user management, paper management, system overview
+- **⚡ Signed URL PDF Delivery** — cached GCS signed URLs, 12-min TTL, zero backend proxy
+- **📈 Live Token Tracking** — real-time Gemini API token usage during translation
+- **💾 Translation Cache** — GCS-backed with integrity checks, skip re-translation
+- **🔄 AI Compile Fix Loop** — Gemini reads LaTeX errors and auto-fixes (3 retries)
+- **📝 Reading Notes** — per-paper notes saved in browser localStorage
+- **⌨️ Keyboard Shortcuts** — zoom (⌘+/-), toggle notes (N), toggle sidebar (S)
 
 ## 🤝 Contributing
 
-1. Fork the repo
-2. Create your feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m 'feat: description'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
+1. Fork → `git checkout -b feature/my-feature`
+2. Commit → `git push origin feature/my-feature`
+3. Open a Pull Request
+
+**Requirements**: Python 3.11+, Node.js 18+, TeX Live (with `latexmk`, `xelatex`, `fandol` fonts)
 
 ## 📄 License
 
-Distributed under the Apache-2.0 License. See `LICENSE` for more information.
+Apache-2.0 · See [LICENSE](LICENSE)

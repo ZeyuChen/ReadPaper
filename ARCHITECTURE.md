@@ -1,168 +1,157 @@
-# ReadPaper Architecture
+# Architecture
 
-All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`).
+> All AI operations use **Gemini 3.0 Flash** (`gemini-3-flash-preview`) with its 1M-token context window.
 
 ## System Overview
 
-ReadPaper consists of two services deployed on Google Cloud Run:
+```mermaid
+graph LR
+    User --> FE[Next.js Frontend]
+    FE --> Proxy["/api/backend proxy"]
+    Proxy --> BE[FastAPI Backend]
+    BE --> GCS[(GCS Storage)]
+    BE --> Gemini[Gemini 3.0 Flash]
+    GCS -->|Signed URL| User
+```
 
-1. **Frontend (Next.js)** — User interface: Google OAuth login, paper search, translation trigger, progress display with token usage, split-view PDF reader, admin dashboard.
-2. **Backend (FastAPI)** — Translation pipeline: arXiv download, analysis, Gemini translation, XeLaTeX compilation. IPC-based progress streaming. PDF delivery via GCS signed URLs.
+Two Cloud Run services, one GCS bucket:
+
+| Service | Stack | Role |
+|---------|-------|------|
+| **Frontend** | Next.js 14 + NextAuth.js | OAuth login, paper library, split-view PDF reader, admin dashboard |
+| **Backend** | FastAPI + Python 3.11 | Translation pipeline, PDF delivery (signed URLs), status streaming |
+| **Storage** | Google Cloud Storage | Per-user paper storage (`users/{email}/{arxiv_id}/`) |
 
 ## Translation Pipeline
 
 ```mermaid
 graph TD
-    A[arXiv URL] --> B[Download Source .tar.gz]
+    A[arXiv URL] --> B[Download e-print .tar.gz]
     B --> C[Extract to workspace]
-    C --> D[PaperAnalyzer: classify files]
-    D --> E[Copy to source_zh/]
-    E --> F["Clean LaTeX comments"]
-    F --> G["Translate .tex files (asyncio.gather)"]
-    G --> H["Compile with latexmk -xelatex"]
-    
-    subgraph "Compile Fix Loop (up to 3 tries)"
-    H -- Success --> I[Final PDF ✅]
-    H -- Fail --> J[Parse error log]
-    J --> K[Gemini fixes offending file]
-    K --> H
+    C --> D[PaperAnalyzer]
+    D --> E[Clean LaTeX comments]
+    E --> F["Translate .tex files<br/>(asyncio.gather, 4 concurrent)"]
+    F --> G["Compile: latexmk -xelatex"]
+
+    subgraph "AI Fix Loop — up to 3 retries"
+    G -- success --> H["✅ {arxiv_id}_zh.pdf"]
+    G -- error --> I[Parse error log]
+    I --> J[Gemini fixes file]
+    J --> G
     end
-    
-    H -- 3 failures --> L[Error Report ❌]
 ```
 
-### Step 1: Download + Extract
+### PaperAnalyzer (`analyzer.py`)
 
-`downloader.py` downloads the arXiv e-print tarball and `extract_source()` handles tar.gz, gzipped single-file, and plain-text archives.
+Classifies every file in the source tree:
 
-### Step 2: PaperAnalyzer
+| Type | Example | Action |
+|------|---------|--------|
+| `main` | File with `\documentclass` | Translate |
+| `sub_content` | `\input`/`\include` targets with prose | Translate |
+| `macro` / `style` | `.sty`, macro-only `.tex` | Skip |
+| `bib` | `.bib` files | Skip |
+| `non_tex` | Images, data, config | Skip |
 
-`analyzer.py` classifies every file in the workspace:
+### Translator (`translator.py`)
 
-| Classification | Description | Action |
-|---|---|---|
-| `main` | The main `.tex` file (contains `\documentclass`) | Translate |
-| `sub_content` | Input/included files with translatable prose | Translate |
-| `macro` / `style` | Package/macro definition files | Skip |
-| `bib` | Bibliography files | Skip |
-| `non_tex` | Images, data files, etc. | Skip |
+- **One API call per file** — complete `.tex` content as input, translated output
+- **Prompt** (`prompts/whole_file_translation_prompt.txt`): translate English text, preserve all LaTeX structure, add `\usepackage[UTF8]{ctex}`
+- **Concurrency**: `asyncio.gather()` with `Semaphore(4)` — configurable via `MAX_CONCURRENT_REQUESTS`
+- **Retry**: 3 attempts per file with exponential backoff
+- **Validation**: output must be non-empty and >20 characters
 
-### Step 3: Whole-File Translation
+### Compiler (`compiler.py`)
 
-Each translatable `.tex` file is sent to Gemini in a **single API call**:
-
-- **Prompt**: `whole_file_translation_prompt.txt` — instructs Gemini to translate English text, preserve all LaTeX structure, and add CJK support
-- **Concurrency**: `asyncio.gather()` with `Semaphore(MAX_CONCURRENT_REQUESTS)` (default: 4)
-- **Retry**: 3 attempts with exponential backoff per file
-- **Validation**: Output must be non-empty and >20 characters
-
-| What Gets Translated | What Stays Untouched |
-|---|---|
-| Prose text (paragraphs, section titles) | `\cite{}`, `\ref{}`, `\label{}` |
-| Comments in English | Math (`$...$`, `\begin{equation}`) |
-| Caption text | LaTeX commands and environments |
-| Abstract, introduction, etc. | Preamble package options |
-
-### Step 4: AI Compile Fix Loop
-
-`compiler.py` runs `latexmk -xelatex` with flags:
-- `-interaction=nonstopmode` — no user input prompts
-- `-f` — force PDF generation despite non-critical errors
+Runs `latexmk -xelatex` with:
+- `-interaction=nonstopmode` — no interactive prompts
+- `-f` — force through non-critical errors
 - `-file-line-error` — machine-parseable error locations
 
-On failure:
-1. `parse_latex_error()` extracts the failing file + line + error type
-2. `ai_fix_file()` sends the file + error snippet to Gemini with `latex_fix_prompt.txt`
-3. Compilation is retried (up to 3 attempts)
+**Dynamic timeout**: `base 300s + (output_tokens / 10000) × 60s`, capped at 1200s.
 
-**Dynamic Timeout**: `300s + (total_output_tokens / 10000) * 60s`, capped at 1200s.
-
-## IPC Protocol
-
-The subprocess (`arxiv_translator/main.py`) communicates with the backend (`main.py`) via stdout IPC messages:
-
-| Code | Format | Description |
-|---|---|---|
-| `DOWNLOADING` | — | Source download started |
-| `EXTRACTING` | — | Archive extraction started |
-| `PRE_FLIGHT` | — | Pre-flight checks (analysis, cleanup) |
-| `FILE_LIST` | `file1,file2,...` | List of files to translate |
-| `TRANSLATING` | `count:total:message` | Per-file translation progress |
-| `FILE_DONE` | `filename:ok/fail` | File translation complete |
-| `TOKENS_TOTAL` | `in:out:filename` | Per-file token usage |
-| `TOKENS_SUMMARY` | `total_in:total_out` | Final total token counts |
-| `COMPILING` | `message` | PDF compilation started |
-| `COMPLETED` | `message` | Success |
-| `FAILED` | `message` | Error |
+On failure: `parse_latex_error()` → `ai_fix_file()` with `latex_fix_prompt.txt` → retry.
 
 ## PDF Delivery
 
-PDFs are served via **GCS Signed URLs** to avoid proxying large files through the backend:
+PDFs are served via **cached GCS signed URLs** — the browser downloads directly from storage.
 
-1. Frontend calls `/paper/{arxiv_id}/original` or `/paper/{arxiv_id}/translated`
-2. Backend checks known PDF paths in GCS directly (no `list_files()` overhead)
-3. Generates a time-limited signed URL (15 min) via IAM `signBlob` API
-4. Returns JSON `{"url": "https://storage.googleapis.com/...?X-Goog-Signature=..."}`
-5. Frontend sets the signed URL directly as iframe `src`
+```
+Request flow:
+1. Browser → fetch("/backend/paper/{id}/translated") → Proxy → Backend
+2. Backend checks signed URL cache (dict, 12-min TTL)
+   → Cache hit: return JSON instantly (~5ms)
+   → Cache miss: blob.exists() + IAM signBlob → cache & return (~700ms)
+3. Backend returns: {"url": "https://storage.googleapis.com/...?X-Goog-Signature=..."}
+4. Browser sets iframe.src = signed URL (direct GCS download, 1 hop)
+```
 
-Fallback: if signed URL generation fails, backend proxies the download via `download_as_bytes`.
+**Why not stream through backend?**
+Streaming route: Browser → Proxy → Backend → GCS → Backend → Proxy → Browser (3 hops, ~3s TTFB for 6MB).
+Signed URL route: Backend returns 900-byte JSON → Browser loads directly from GCS (1 hop).
 
-## Storage
+**Fallback**: if IAM signBlob fails, backend streams `download_as_bytes()` directly.
 
-Two backends via `StorageService`:
-- **Local**: Files on disk at `./paper_storage/`
-- **GCS**: Google Cloud Storage with bucket prefix per user (`users/{email}/{arxiv_id}/`)
+## IPC Protocol
 
-Stored per paper:
-- `{arxiv_id}.pdf` — Original English PDF
-- `{arxiv_id}v{N}_zh.pdf` — Translated Chinese PDF
-- `tex/` — Source `.tex` files (original and translated)
-- `status.json` — Cached translation status with token counts
+The translation subprocess communicates progress via stdout:
 
-## Translation Cache
-
-`services/cache.py` provides GCS-backed caching with integrity validation:
-
-- **Cache key**: `{email}/{arxiv_id}/status.json`
-- **Hit condition**: `status == "completed"` with valid token counts
-- **On hit**: Paper is added to the user's library instantly without re-translation
-- Prevents duplicate Gemini API usage for previously translated papers
+| Code | Format | Example |
+|------|--------|---------|
+| `DOWNLOADING` | — | Source download started |
+| `EXTRACTING` | — | Archive extraction |
+| `FILE_LIST` | `file1\|file2\|...` | Files to translate |
+| `TRANSLATING` | `count:total:msg` | `3:7:Translating main.tex` |
+| `FILE_DONE` | `filename:ok/fail` | `main.tex:ok` |
+| `TOKENS_TOTAL` | `in:out:filename` | `12500:14200:main.tex` |
+| `TOKENS_SUMMARY` | `total_in:total_out` | `45000:52000` |
+| `COMPILING` | `msg` | `Compiling PDF (timeout 420s)` |
+| `COMPLETED` / `FAILED` | `msg` | Final status |
 
 ## Authentication
 
-- **Frontend**: NextAuth.js v5 with Google OAuth provider
-- **Backend**: Validates Google ID token via `google.auth.transport` or accepts `x-user-email` header
-- **Admin**: `/admin` page with user/paper management and delete operations
+| Layer | Implementation |
+|-------|---------------|
+| **Frontend** | NextAuth.js v5 with Google OAuth provider |
+| **Backend** | Validates Google ID token via `google.auth.transport`, or accepts `x-user-email` header from trusted proxy |
+| **Admin** | Hardcoded admin email check in `/admin` page |
 
-## Admin Dashboard
+## Storage Layout
 
-The admin dashboard (`/admin`) provides:
+Per-user files in GCS at `users/{email}/{arxiv_id}/`:
 
-- **Overview**: Total users, papers, translations, and storage usage
-- **User Management**: Browse users, view their papers, delete user data
-- **Paper Management**: View all translated papers, re-trigger compilation, delete papers
-- **System Health**: Model usage statistics, recent activity
+```
+users/user@gmail.com/2602.15763/
+├── 2602.15763.pdf          # Original from arXiv
+├── 2602.15763_zh.pdf       # Translated Chinese PDF
+└── tex/
+    ├── original/           # Original .tex source files
+    └── translated/         # Translated .tex source files
+```
+
+## Translation Cache (`services/cache.py`)
+
+- **Key**: `{email}/{arxiv_id}/status.json` in GCS
+- **Hit**: status == `completed` with valid token counts → paper added to library instantly
+- **Integrity**: validates token counts are non-zero before accepting cache
 
 ## Cloud Run Configuration
 
-Backend Cloud Run service is optimized for long-running translation tasks:
-
-| Setting | Value | Reason |
-|---|---|---|
-| `--cpu` | `2` | Sufficient CPU for parallel LaTeX compilation |
-| `--memory` | `4Gi` | Large papers need memory for TeX processing |
-| `--timeout` | `900` | 15-minute timeout for long compilations |
-| `--no-cpu-throttling` | enabled | Background tasks get full CPU after HTTP response returns |
-| `--min-instances` | `1` | Avoid cold starts |
+```yaml
+# Backend
+--cpu=2
+--memory=4Gi
+--timeout=900
+--no-cpu-throttling    # Critical: background compilation needs CPU after response
+--min-instances=1      # Avoid cold starts
+```
 
 ## Local Development
 
 ```bash
 cp .env.example .env
-# Set GEMINI_API_KEY, DISABLE_AUTH=true
+# Set: GEMINI_API_KEY=..., DISABLE_AUTH=true, STORAGE_TYPE=local
 ./run_conda_local.sh
 ```
 
-Requirements:
-- **TeX Live** with `latexmk`, `xelatex`, and `fandol` fonts
-- Fallback: Docker with `ghcr.io/xu-cheng/texlive-full`
+**Requirements**: Python 3.11+, Node.js 18+, TeX Live (`latexmk`, `xelatex`, `fandol` fonts)
