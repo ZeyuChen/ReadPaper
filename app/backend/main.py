@@ -884,6 +884,55 @@ async def get_tex_file(
         logger.error(f"tex file fetch failed ({gcs_key}): {e}")
         raise HTTPException(status_code=404, detail=f"File not available: {name}")
 
+# ── Signed URL cache for fast PDF delivery ─────────────────────────────────────
+# Avoids repeated IAM signBlob calls (~1s each). Cache TTL = 12 min for 15 min expiry.
+import time as _time
+_signed_url_cache: dict[str, tuple[str, float]] = {}  # {gcs_path: (url, expires_at)}
+_gcs_credentials = None
+_gcs_credentials_lock = asyncio.Lock()
+
+
+async def _get_or_create_signed_url(blob, gcs_path: str) -> str | None:
+    """Get a signed URL from cache or generate a new one via IAM signBlob."""
+    global _gcs_credentials
+
+    # Check cache first (instant return)
+    cached = _signed_url_cache.get(gcs_path)
+    if cached and cached[1] > _time.time():
+        return cached[0]
+
+    # Generate new signed URL
+    import datetime
+    import google.auth
+    import google.auth.transport.requests
+
+    async with _gcs_credentials_lock:
+        if _gcs_credentials is None:
+            _gcs_credentials, _ = google.auth.default()
+
+        # Refresh only if token is expired or missing
+        if not _gcs_credentials.token or (
+            _gcs_credentials.expiry and _gcs_credentials.expiry.replace(tzinfo=None)
+            < datetime.datetime.utcnow()
+        ):
+            auth_req = google.auth.transport.requests.Request()
+            await asyncio.to_thread(_gcs_credentials.refresh, auth_req)
+
+    signed_url = await asyncio.to_thread(
+        blob.generate_signed_url,
+        expiration=datetime.timedelta(minutes=15),
+        method="GET",
+        response_type="application/pdf",
+        version="v4",
+        service_account_email=_gcs_credentials.service_account_email,
+        access_token=_gcs_credentials.token,
+    )
+
+    # Cache for 12 minutes (with 3-min buffer before 15-min expiry)
+    _signed_url_cache[gcs_path] = (signed_url, _time.time() + 720)
+    return signed_url
+
+
 @app.get("/paper/{arxiv_id}/{file_type}")
 async def get_paper(
     arxiv_id: str, 
@@ -891,9 +940,9 @@ async def get_paper(
     storage_service: StorageService = Depends(get_storage_service)
 ):
     """
-    Serves the PDF file (original or translated) for a specific paper.
-    GCS: streams directly from same-region GCS (~500ms for 6MB).
-    Local: serves from disk via FileResponse.
+    Returns a short-lived signed URL for direct browser download from GCS.
+    Signed URLs are cached for 12 minutes. Browser loads PDF in 1 hop (no proxy).
+    Local dev: serves file directly via FileResponse.
     """
     if file_type == "original":
         # Known path for original PDF
@@ -922,21 +971,30 @@ async def get_paper(
             gcs_path = storage_service._get_gcs_path(candidate)
             blob = storage_service.bucket.blob(gcs_path)
             try:
+                # Check cache first (skips blob.exists + signBlob entirely)
+                cached = _signed_url_cache.get(gcs_path)
+                if cached and cached[1] > _time.time():
+                    return JSONResponse({"url": cached[0]})
+
                 exists = await asyncio.to_thread(blob.exists)
                 if exists:
-                    # Stream directly from GCS through the backend.
-                    # GCS → Cloud Run is same-region (~500ms for 6MB).
-                    # CPU throttling is disabled so background I/O is fast.
-                    filename = os.path.basename(candidate)
-                    blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
-                    return Response(
-                        content=blob_bytes,
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f'inline; filename="{filename}"',
-                            "Content-Length": str(len(blob_bytes)),
-                        },
-                    )
+                    try:
+                        signed_url = await _get_or_create_signed_url(blob, gcs_path)
+                        if signed_url:
+                            return JSONResponse({"url": signed_url})
+                    except Exception as sign_err:
+                        # Fallback: stream directly through backend
+                        logger.warning(f"Signed URL failed, falling back to proxy: {sign_err}")
+                        filename = os.path.basename(candidate)
+                        blob_bytes = await asyncio.to_thread(blob.download_as_bytes)
+                        return Response(
+                            content=blob_bytes,
+                            media_type="application/pdf",
+                            headers={
+                                "Content-Disposition": f'inline; filename="{filename}"',
+                                "Content-Length": str(len(blob_bytes)),
+                            },
+                        )
             except HTTPException:
                 raise
             except Exception as e:
