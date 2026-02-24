@@ -4,7 +4,6 @@
   <h1>ReadPaper</h1>
   <p><strong>AI-powered bilingual arXiv reader — translate any paper to Chinese with one click</strong></p>
   <p>
-    <a href="https://readpaper-frontend-989182646968.us-central1.run.app">Live Demo</a> ·
     <a href="#-quick-start">Quick Start</a> ·
     <a href="ARCHITECTURE.md">Architecture</a>
   </p>
