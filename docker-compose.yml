@@ -1,0 +1,118 @@
+# ReadPaper - Docker Compose Production Deployment
+# Usage:
+#   1. cp .env.example .env && vim .env  (fill in your keys)
+#   2. docker compose up -d --build
+#   3. Visit http://localhost (or your domain)
+#
+# For HTTPS with your own domain:
+#   1. Set DOMAIN=yourdomain.com in .env
+#   2. Run: ./deploy.sh setup-ssl
+#   3. docker compose --profile ssl up -d
+
+services:
+  # ── Backend (FastAPI + TeX Live) ──────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: app/backend/Dockerfile
+    container_name: readpaper-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=8080
+      - STORAGE_TYPE=${STORAGE_TYPE:-local}
+    volumes:
+      - paper_storage:/app/paper_storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - readpaper-net
+
+  # ── Frontend (Next.js) ───────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: app/frontend/Dockerfile
+      args:
+        - NEXT_PUBLIC_DISABLE_AUTH=${NEXT_PUBLIC_DISABLE_AUTH:-true}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+    container_name: readpaper-frontend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=8080
+      - API_URL=http://backend:8080
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - AUTH_TRUST_HOST=true
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - readpaper-net
+
+  # ── Nginx Reverse Proxy (HTTP) ──────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: readpaper-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks:
+      - readpaper-net
+
+  # ── Nginx with SSL (HTTPS) ─── use with: --profile ssl ──────
+  nginx-ssl:
+    image: nginx:alpine
+    container_name: readpaper-nginx-ssl
+    restart: unless-stopped
+    profiles: ["ssl"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx-ssl.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks:
+      - readpaper-net
+
+  # ── Certbot (Let's Encrypt) ─── use with: --profile ssl ─────
+  certbot:
+    image: certbot/certbot
+    container_name: readpaper-certbot
+    profiles: ["ssl"]
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    networks:
+      - readpaper-net
+
+volumes:
+  paper_storage:
+    driver: local
+  certbot_certs:
+  certbot_www:
+
+networks:
+  readpaper-net:
+    driver: bridge

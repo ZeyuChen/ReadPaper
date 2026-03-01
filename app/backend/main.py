@@ -42,6 +42,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── Health Check ─────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Docker/container orchestration."""
+    return {"status": "healthy"}
+
+
 # Status structure
 class TaskStatus(TypedDict):
     """
